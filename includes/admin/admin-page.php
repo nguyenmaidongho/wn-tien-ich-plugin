@@ -198,6 +198,7 @@ function wn_render_tab_modules() {
           <p><?php echo esc_html($m['desc']); ?></p>
           <?php if (!empty($m['warn'])) : ?><p class="wn-warn"><span class="dashicons dashicons-info-outline"></span><?php echo esc_html($m['warn']); ?></p><?php endif; ?>
           <?php if (!empty($m['tab'])) : ?><a class="wn-card-link" href="<?php echo esc_url(wn_admin_url($m['tab'])); ?>">Cài đặt <span aria-hidden="true">→</span></a><?php endif; ?>
+          <?php if (!empty($m['page']) && wn_module_on($key)) : ?><a class="wn-card-link" href="<?php echo esc_url(admin_url($m['page'])); ?>">Mở công cụ <span aria-hidden="true">→</span></a><?php endif; ?>
         </div>
       </div>
     <?php endforeach; ?>

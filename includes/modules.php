@@ -39,6 +39,19 @@ function wn_modules() {
       'icon' => 'dashicons-flag',
       'default' => '1',
     ],
+    'webp' => [
+      'title' => 'Ảnh WebP',
+      'desc' => 'Tự đổi ảnh JPG/PNG tải lên sang WebP và có công cụ chuyển hàng loạt ảnh cũ (Media → WebP Batch Optimizer). Thay plugin WebNow WebP Batch.',
+      'icon' => 'dashicons-format-image',
+      'default' => '1',
+    ],
+    'media_cleanup' => [
+      'title' => 'Dọn ảnh không dùng',
+      'desc' => 'Quét ảnh trong Thư viện không còn dùng ở đâu, cách ly để kiểm tra rồi mới xóa hẳn (Media → Dọn ảnh không dùng).',
+      'icon' => 'dashicons-trash',
+      'default' => '0',
+      'page' => 'upload.php?page=wn-media-cleanup',
+    ],
     'login_branding' => [
       'title' => 'Trang đăng nhập WebNow',
       'desc' => 'Logo, màu sắc và favicon thương hiệu ở trang đăng nhập & admin.',

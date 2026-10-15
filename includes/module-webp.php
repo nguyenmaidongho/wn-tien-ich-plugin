@@ -1,0 +1,1071 @@
+<?php
+/**
+ * Tự đổi ảnh tải lên sang WebP + công cụ chuyển hàng loạt ảnh cũ (Media → WebP Batch Optimizer).
+ * Gộp từ plugin WebNow WebP Batch Optimizer 3.2.2.
+ */
+if (!defined('ABSPATH')) {
+  exit;
+}
+
+// Nếu plugin WebNow WebP Batch bản riêng vẫn đang bật thì để nó chạy, tránh khai báo trùng.
+$wn_webp_standalone = class_exists('WebNow_WebP_Batch');
+if (!$wn_webp_standalone) {
+
+final class WebNow_WebP_Batch {
+  const OPT_QUEUE = 'webnow_webp_queue_v32';
+  const OPT_QUALITY = 'webnow_webp_quality';
+  const OPT_SECRET = 'webnow_webp_cron_secret';
+  const OPT_DELETE_ORIGINALS = 'webnow_webp_delete_originals';
+  const BATCH = 5;
+
+  public function __construct() {
+    add_action('admin_menu', [$this, 'menu']);
+    add_action('admin_enqueue_scripts', [$this, 'assets']);
+    add_action('wp_ajax_webnow_webp_stats', [$this, 'ajax_stats']);
+    add_action('wp_ajax_webnow_webp_prepare', [$this, 'ajax_prepare']);
+    add_action('wp_ajax_webnow_webp_process', [$this, 'ajax_process']);
+    add_action('wp_ajax_webnow_webp_save', [$this, 'ajax_save']);
+    add_action('wp_ajax_webnow_webp_repair_links', [$this, 'ajax_repair_links']);
+    add_action('init', [$this, 'maybe_cron_run'], 5);
+    add_filter('wp_generate_attachment_metadata', [$this, 'on_metadata'], 99, 2);
+  }
+
+  private function quality(): int {
+    $q = (int) get_option(self::OPT_QUALITY, 82);
+    return max(60, min(92, $q ?: 82));
+  }
+
+  private function delete_originals(): bool {
+    // Mặc định GIỮ ảnh gốc; chỉ xóa khi bật rõ ràng trong cài đặt.
+    return (string) get_option(self::OPT_DELETE_ORIGINALS, '0') === '1';
+  }
+
+  private function secret(): string {
+    $s = (string) get_option(self::OPT_SECRET, '');
+    if ($s === '') {
+      $s = wp_generate_password(24, false, false);
+      update_option(self::OPT_SECRET, $s, false);
+    }
+    return $s;
+  }
+
+  public function menu() {
+    add_media_page(
+      'WebP Batch Optimizer',
+      'WebP Batch Optimizer',
+      'manage_options',
+      'webnow-webp-batch',
+      [$this, 'page']
+    );
+  }
+
+  public function assets($hook) {
+    if ($hook !== 'media_page_webnow-webp-batch') {
+      return;
+    }
+    wp_enqueue_script(
+      'webnow-webp-batch',
+      wn_plugin_url('/includes/webp-batch.js'),
+      ['jquery'],
+      '3.2.1',
+      true
+    );
+    wp_localize_script('webnow-webp-batch', 'WEBNOW', [
+      'ajax' => admin_url('admin-ajax.php'),
+      'nonce' => wp_create_nonce('webnow_webp'),
+    ]);
+  }
+
+  public function page() {
+    $stats = $this->collect_stats();
+    ?>
+    <div class="wrap">
+      <h1>WebNow WebP Batch Optimizer <small style="font-size:13px;font-weight:400">v3.2.1</small></h1>
+      <p><strong>Thay file thật</strong> (full + mọi size) → <code>.webp</code>, <strong>cập nhật DB/metadata trước</strong>, rồi mới xóa JPG/PNG.</p>
+      <p class="description" style="color:#b32d2e"><strong>v3.2 quan trọng:</strong> không xóa file gốc cho đến khi đã ghi Media + REPLACE URL trong posts/postmeta xong — tránh ảnh 404.</p>
+
+      <table class="widefat striped" style="max-width:780px;margin:16px 0">
+        <tbody>
+          <tr><th>Attachment cần xử lý (kể cả size JPG sót)</th><td id="wn-total"><?php echo (int) $stats['attachments']; ?></td></tr>
+          <tr><th>Attachment MIME webp</th><td id="wn-ready"><?php echo (int) $stats['webp_attachments']; ?></td></tr>
+          <tr><th>Tổng trong hàng đợi</th><td id="wn-missing"><strong><?php echo (int) $stats['pending']; ?></strong></td></tr>
+          <tr><th>File JPG/PNG lẻ trong uploads</th><td id="wn-orphans"><?php echo (int) $stats['orphan_files']; ?></td></tr>
+        </tbody>
+      </table>
+
+      <p>
+        <label>Chất lượng (60–92):
+          <input type="number" id="wn-quality" min="60" max="92" value="<?php echo (int) $this->quality(); ?>" style="width:70px">
+        </label>
+        &nbsp;
+        <label>
+          <input type="checkbox" id="wn-delete" <?php checked($this->delete_originals()); ?>>
+          Xóa JPG/PNG sau khi đã có WebP
+        </label>
+        <button type="button" class="button" id="wn-save">Lưu</button>
+      </p>
+
+      <p>
+        <button id="webnow-start" class="button button-primary">Convert full + mọi size → WebP</button>
+        <button id="webnow-repair" class="button">Sửa link JPG đã xóa (DB → WebP)</button>
+        <button id="webnow-refresh" class="button">Làm mới thống kê</button>
+      </p>
+      <p id="webnow-status"></p>
+      <progress id="webnow-progress" value="0" max="100" style="width:100%;max-width:780px;height:18px"></progress>
+      <p class="description">Sau khi xong: purge LiteSpeed/CF cache, hard refresh trang sản phẩm (Ctrl+F5).</p>
+    </div>
+    <?php
+  }
+
+  /** Attachment còn JPG/PNG ở full hoặc bất kỳ size nào trong metadata. */
+  public function attachment_needs_convert($attachment_id) {
+    $file = get_attached_file($attachment_id);
+    if ($file && preg_match('/\.(jpe?g|png)$/i', $file) && is_file($file)) {
+      return true;
+    }
+    $meta = wp_get_attachment_metadata($attachment_id);
+    if (!is_array($meta)) {
+      return false;
+    }
+    if (!empty($meta['file']) && preg_match('/\.(jpe?g|png)$/i', $meta['file'])) {
+      return true;
+    }
+    $dir = $file ? trailingslashit(dirname($file)) : '';
+    if (!$dir && !empty($meta['file'])) {
+      $dir = trailingslashit(dirname(path_join(wp_get_upload_dir()['basedir'], $meta['file'])));
+    }
+    if (!empty($meta['sizes']) && is_array($meta['sizes'])) {
+      foreach ($meta['sizes'] as $size) {
+        if (empty($size['file'])) {
+          continue;
+        }
+        if (preg_match('/\.(jpe?g|png)$/i', $size['file'])) {
+          // Still listed as jpg in meta — needs fix even if file already gone.
+          return true;
+        }
+        if ($dir) {
+          $path = $dir . $size['file'];
+          if (preg_match('/\.(jpe?g|png)$/i', $path) && is_file($path)) {
+            return true;
+          }
+        }
+      }
+    }
+    return false;
+  }
+
+  /** @return array<string,int|array> */
+  public function collect_stats($with_queue = false) {
+    $all = get_posts([
+      'post_type' => 'attachment',
+      'post_mime_type' => 'image',
+      'posts_per_page' => -1,
+      'fields' => 'ids',
+      'no_found_rows' => true,
+    ]);
+
+    $webp_ids = get_posts([
+      'post_type' => 'attachment',
+      'post_mime_type' => ['image/webp'],
+      'posts_per_page' => -1,
+      'fields' => 'ids',
+      'no_found_rows' => true,
+    ]);
+
+    $pending_ids = [];
+    foreach ($all as $id) {
+      if ($this->attachment_needs_convert((int) $id)) {
+        $pending_ids[] = (int) $id;
+      }
+    }
+
+    $orphan_files = $this->find_orphan_raster_files();
+
+    $out = [
+      'attachments' => count($pending_ids),
+      'webp_attachments' => count($webp_ids),
+      'pending' => count($pending_ids),
+      'orphan_files' => count($orphan_files),
+    ];
+    if ($with_queue) {
+      $queue = [];
+      foreach ($pending_ids as $id) {
+        $queue[] = ['type' => 'attachment', 'id' => (int) $id];
+      }
+      foreach ($orphan_files as $path) {
+        $queue[] = ['type' => 'file', 'path' => $path];
+      }
+      $out['queue'] = $queue;
+      $out['pending'] = count($queue);
+    }
+    return $out;
+  }
+
+  private function find_orphan_raster_files() {
+    $basedir = trailingslashit(wp_get_upload_dir()['basedir']);
+    $files = [];
+    if (!is_dir($basedir)) {
+      return $files;
+    }
+    $it = new RecursiveIteratorIterator(
+      new RecursiveDirectoryIterator($basedir, FilesystemIterator::SKIP_DOTS)
+    );
+    foreach ($it as $file) {
+      if (!$file->isFile()) {
+        continue;
+      }
+      $path = wp_normalize_path($file->getPathname());
+      // Ảnh đang cách ly bởi module Dọn ảnh: không đụng vào.
+      if (strpos($path, '/wn-quarantine/') !== false) {
+        continue;
+      }
+      if (!preg_match('/\.(jpe?g|png)$/i', $path)) {
+        continue;
+      }
+      $webp = preg_replace('/\.(jpe?g|png)$/i', '.webp', $path);
+      if (is_file($webp) && filesize($webp) > 0) {
+        // Already have webp — still queue for delete-originals cleanup.
+        if ($this->delete_originals()) {
+          $files[] = $path;
+        }
+        continue;
+      }
+      $files[] = $path;
+    }
+    return $files;
+  }
+
+  public function ajax_stats() {
+    $this->guard_ajax();
+    wp_send_json_success($this->collect_stats());
+  }
+
+  public function ajax_save() {
+    $this->guard_ajax();
+    $q = isset($_POST['quality']) ? (int) $_POST['quality'] : 82;
+    update_option(self::OPT_QUALITY, max(60, min(92, $q)), false);
+    update_option(self::OPT_DELETE_ORIGINALS, !empty($_POST['delete_originals']) ? '1' : '0', false);
+    wp_send_json_success(['ok' => 1]);
+  }
+
+  public function ajax_prepare() {
+    $this->guard_ajax();
+    $stats = $this->collect_stats(true);
+    update_option(self::OPT_QUEUE, $stats['queue'], false);
+    wp_send_json_success([
+      'total' => (int) $stats['pending'],
+      'attachments' => (int) $stats['attachments'],
+      'orphans' => (int) $stats['orphan_files'],
+    ]);
+  }
+
+  public function ajax_process() {
+    $this->guard_ajax();
+    wp_send_json($this->process_queue(self::BATCH));
+  }
+
+  /**
+   * Repair: JPG/PNG URL trong DB mà file đã mất, nhưng có .webp (hoặc sidecar) trên disk.
+   */
+  public function ajax_repair_links() {
+    $this->guard_ajax();
+    $fixed = $this->repair_broken_raster_links();
+    wp_send_json_success(['fixed' => $fixed, 'stats' => $this->collect_stats(false)]);
+  }
+
+  public function repair_broken_raster_links() {
+    global $wpdb;
+    $basedir = trailingslashit(wp_get_upload_dir()['basedir']);
+    $baseurl = trailingslashit(wp_get_upload_dir()['baseurl']);
+    $fixed = 0;
+
+    // First: materialize any missing real .webp from sidecars (fixes 404 when DB already points to .webp).
+    $fixed += $this->materialize_all_sidecars();
+
+    // Scan post_content for uploads/*.jpg|png
+    $posts = $wpdb->get_results(
+      "SELECT ID, post_content FROM {$wpdb->posts} WHERE post_content LIKE '%/wp-content/uploads/%' AND (post_content LIKE '%.jpg%' OR post_content LIKE '%.jpeg%' OR post_content LIKE '%.png%')"
+    );
+    foreach ($posts as $post) {
+      $content = $post->post_content;
+      $new = preg_replace_callback(
+        '#((?:https?://[^/]+)?/wp-content/uploads/[^\"\'\s>]+)\.(jpe?g|png)(?!\.webp)#i',
+        function ($m) use ($basedir, $baseurl, &$fixed) {
+          $rel = $m[1];
+          // strip domain to relative uploads path
+          $pos = stripos($rel, '/wp-content/uploads/');
+          if ($pos === false) {
+            return $m[0];
+          }
+          $rel_path = substr($rel, $pos + strlen('/wp-content/uploads/')) . '.' . $m[2];
+          $abs = $basedir . ltrim(str_replace('\\', '/', $rel_path), '/');
+          $webp = preg_replace('/\.(jpe?g|png)$/i', '.webp', $abs);
+          $sidecar = $abs . '.webp';
+
+          if (!is_file($abs)) {
+            if (!is_file($webp) && is_file($sidecar)) {
+              @copy($sidecar, $webp);
+            }
+            if (is_file($webp)) {
+              $fixed++;
+              return preg_replace('/\.(jpe?g|png)$/i', '.webp', $m[0]);
+            }
+          } elseif (is_file($webp) || is_file($sidecar)) {
+            // File jpg still exists OR webp exists — still normalize URL to .webp if webp ready
+            if (!is_file($webp) && is_file($sidecar)) {
+              @copy($sidecar, $webp);
+            }
+            if (is_file($webp)) {
+              $fixed++;
+              return preg_replace('/\.(jpe?g|png)$/i', '.webp', $m[0]);
+            }
+          }
+          return $m[0];
+        },
+        $content
+      );
+      // Also normalize leftover .jpg.webp → .webp when real webp exists
+      $new = preg_replace_callback(
+        '#((?:https?://[^/]+)?/wp-content/uploads/[^\"\'\s>]+)\.(jpe?g|png)\.webp#i',
+        function ($m) use ($basedir, &$fixed) {
+          $pos = stripos($m[1], '/wp-content/uploads/');
+          if ($pos === false) {
+            return $m[0];
+          }
+          $rel = substr($m[1], $pos + strlen('/wp-content/uploads/')) . '.' . $m[2];
+          $abs_jpg = $basedir . ltrim($rel, '/');
+          $webp = preg_replace('/\.(jpe?g|png)$/i', '.webp', $abs_jpg);
+          $sidecar = $abs_jpg . '.webp';
+          if (!is_file($webp) && is_file($sidecar)) {
+            @copy($sidecar, $webp);
+          }
+          if (is_file($webp)) {
+            $fixed++;
+            return preg_replace('/\.(jpe?g|png)\.webp$/i', '.webp', $m[0]);
+          }
+          return $m[0];
+        },
+        $new
+      );
+      if ($new !== $content) {
+        $wpdb->update($wpdb->posts, ['post_content' => $new], ['ID' => $post->ID]);
+      }
+    }
+
+    // Link nằm ngoài post_content: meta (Elementor, ACF), options, bảng Smart Slider...
+    $fixed += $this->repair_refs_outside_content();
+
+    // Fix attachment metadata still pointing to missing jpg when webp exists
+    $ids = get_posts([
+      'post_type' => 'attachment',
+      'post_mime_type' => 'image',
+      'posts_per_page' => -1,
+      'fields' => 'ids',
+      'no_found_rows' => true,
+    ]);
+    foreach ($ids as $id) {
+      if ($this->attachment_needs_convert((int) $id)) {
+        $r = $this->convert_attachment((int) $id);
+        if ($r === true) {
+          $fixed++;
+        }
+      }
+    }
+
+    return $fixed;
+  }
+
+  /** Bảng của plugin lưu link ảnh riêng (Smart Slider 3...). Thêm bảng khác qua filter. */
+  private function extra_ref_tables() {
+    global $wpdb;
+    $tables = (array) $wpdb->get_col($wpdb->prepare('SHOW TABLES LIKE %s', $wpdb->esc_like($wpdb->prefix . 'nextend2_smartslider3_') . '%'));
+    return apply_filters('webnow_webp_ref_tables', $tables);
+  }
+
+  /**
+   * Sửa link JPG/PNG đã mất (có .webp thay thế) trong 1 chuỗi. Bắt cả dạng JSON "\/" (Elementor, Smart Slider)
+   * và tiền tố "$upload$/" của Smart Slider.
+   */
+  private function fix_raster_refs($text, &$fixed) {
+    if (!is_string($text) || $text === '' || !preg_match('/\.(jpe?g|png)/i', $text)) {
+      return $text;
+    }
+    $basedir = trailingslashit(wp_get_upload_dir()['basedir']);
+    return preg_replace_callback(
+      '#((?:wp-content\\\\?/uploads|\$upload\$)\\\\?/)([^"\'\s<>()]+?)\.(jpe?g|png)(\.webp)?(?![a-z0-9])#i',
+      function ($m) use ($basedir, &$fixed) {
+        $rel = ltrim(str_replace('\/', '/', $m[2]), '/');
+        $abs = $basedir . $rel . '.' . $m[3];
+        $webp = $basedir . $rel . '.webp';
+        if (!is_file($webp) && is_file($abs . '.webp')) {
+          @copy($abs . '.webp', $webp);
+        }
+        // Chỉ đổi khi file gốc đã mất (hoặc link đang là .jpg.webp) và .webp có thật.
+        if ((!is_file($abs) || !empty($m[4])) && is_file($webp)) {
+          $fixed++;
+          return $m[1] . $m[2] . '.webp';
+        }
+        return $m[0];
+      },
+      $text
+    );
+  }
+
+  /** Như fix_raster_refs nhưng giữ đúng dữ liệu serialize (độ dài chuỗi thay đổi). */
+  private function fix_raster_refs_value($value, &$fixed) {
+    if (is_serialized($value)) {
+      $data = @unserialize($value, ['allowed_classes' => false]);
+      if ($data !== false && (is_array($data) || is_string($data))) {
+        $before = $fixed;
+        $data = $this->map_strings($data, function ($s) use (&$fixed) {
+          return $this->fix_raster_refs($s, $fixed);
+        });
+        return $fixed > $before ? serialize($data) : $value;
+      }
+      return $value;
+    }
+    return $this->fix_raster_refs($value, $fixed);
+  }
+
+  private function map_strings($data, $fn) {
+    if (is_array($data)) {
+      foreach ($data as $k => $v) {
+        $data[$k] = $this->map_strings($v, $fn);
+      }
+      return $data;
+    }
+    return is_string($data) ? $fn($data) : $data;
+  }
+
+  private function repair_refs_outside_content() {
+    global $wpdb;
+    $fixed = 0;
+    $like = "(%s LIKE '%%.jp%%g%%' OR %s LIKE '%%.png%%')";
+
+    $rows = $wpdb->get_results(
+      "SELECT meta_id, meta_value FROM {$wpdb->postmeta}
+       WHERE meta_key NOT IN ('_wp_attached_file','_wp_attachment_metadata','_wp_attachment_backup_sizes')
+         AND " . sprintf($like, 'meta_value', 'meta_value')
+    );
+    foreach ($rows as $r) {
+      $new = $this->fix_raster_refs_value($r->meta_value, $fixed);
+      if ($new !== $r->meta_value) {
+        $wpdb->update($wpdb->postmeta, ['meta_value' => $new], ['meta_id' => $r->meta_id]);
+      }
+    }
+
+    $rows = $wpdb->get_results(
+      "SELECT option_id, option_value FROM {$wpdb->options}
+       WHERE option_name NOT LIKE '\_%%transient\_%%' AND option_name <> '" . esc_sql(self::OPT_QUEUE) . "'
+         AND " . sprintf($like, 'option_value', 'option_value')
+    );
+    foreach ($rows as $r) {
+      $new = $this->fix_raster_refs_value($r->option_value, $fixed);
+      if ($new !== $r->option_value) {
+        $wpdb->update($wpdb->options, ['option_value' => $new], ['option_id' => $r->option_id]);
+      }
+    }
+
+    foreach ($this->extra_ref_tables() as $table) {
+      $pk = '';
+      $cols = [];
+      foreach ((array) $wpdb->get_results('SHOW COLUMNS FROM `' . esc_sql($table) . '`', ARRAY_A) as $col) {
+        if ($col['Key'] === 'PRI' && !$pk) {
+          $pk = $col['Field'];
+        } elseif (preg_match('/char|text/i', $col['Type'])) {
+          $cols[] = $col['Field'];
+        }
+      }
+      if (!$pk || !$cols) {
+        continue;
+      }
+      foreach ($cols as $col) {
+        $c = '`' . esc_sql($col) . '`';
+        $rows = $wpdb->get_results('SELECT `' . esc_sql($pk) . '` AS k, ' . $c . ' AS v FROM `' . esc_sql($table) . '` WHERE ' . sprintf($like, $c, $c));
+        foreach ($rows as $r) {
+          $new = $this->fix_raster_refs_value($r->v, $fixed);
+          if ($new !== $r->v) {
+            $wpdb->update($table, [$col => $new], [$pk => $r->k]);
+          }
+        }
+      }
+    }
+    if ($fixed) {
+      // Đã ghi thẳng DB nên cache option/meta cũ phải bỏ.
+      wp_cache_flush();
+    }
+    return $fixed;
+  }
+
+  private function guard_ajax() {
+    check_ajax_referer('webnow_webp', 'nonce');
+    if (!current_user_can('manage_options')) {
+      wp_send_json_error('forbidden', 403);
+    }
+  }
+
+  public function maybe_cron_run() {
+    if (empty($_GET['webnow_webp_cron'])) {
+      return;
+    }
+    if (!hash_equals($this->secret(), (string) $_GET['webnow_webp_cron'])) {
+      status_header(403);
+      wp_die('Forbidden', 403);
+    }
+    $n = isset($_GET['n']) ? max(1, min(20, (int) $_GET['n'])) : 5;
+    $queue = get_option(self::OPT_QUEUE, []);
+    if (!is_array($queue) || !$queue) {
+      $stats = $this->collect_stats(true);
+      update_option(self::OPT_QUEUE, $stats['queue'], false);
+    }
+    nocache_headers();
+    wp_send_json($this->process_queue($n));
+  }
+
+  public function process_queue($limit) {
+    $queue = get_option(self::OPT_QUEUE, []);
+    if (!is_array($queue)) {
+      $queue = [];
+    }
+    $batch = array_splice($queue, 0, (int) $limit);
+    update_option(self::OPT_QUEUE, $queue, false);
+
+    $ok = 0;
+    $fail = 0;
+    $skipped = 0;
+    foreach ($batch as $item) {
+      if (!is_array($item) || empty($item['type'])) {
+        $fail++;
+        continue;
+      }
+      if ($item['type'] === 'attachment') {
+        $r = $this->convert_attachment((int) $item['id']);
+      } else {
+        $r = $this->replace_file_with_webp((string) ($item['path'] ?? ''), true);
+      }
+      if ($r === true) {
+        $ok++;
+      } elseif ($r === null) {
+        $skipped++;
+      } else {
+        $fail++;
+      }
+    }
+
+    return [
+      'done' => empty($queue),
+      'left' => count($queue),
+      'ok' => $ok,
+      'fail' => $fail,
+      'skipped' => $skipped,
+      'stats' => $this->collect_stats(false),
+    ];
+  }
+
+  /**
+   * Convert full + ALL registered sizes. Works even if full is already .webp
+   * but thumbnails still .jpg in metadata.
+   * Order: create WebP → update Media/DB → only then delete JPG/PNG.
+   */
+  public function convert_attachment($attachment_id) {
+    $attachment_id = (int) $attachment_id;
+    if ($attachment_id < 1) {
+      return false;
+    }
+
+    $file = get_attached_file($attachment_id);
+    $meta = wp_get_attachment_metadata($attachment_id);
+    if (!is_array($meta)) {
+      $meta = [];
+    }
+
+    $dir = '';
+    if ($file) {
+      $dir = trailingslashit(dirname($file));
+    } elseif (!empty($meta['file'])) {
+      $dir = trailingslashit(dirname(path_join(wp_get_upload_dir()['basedir'], $meta['file'])));
+      $file = path_join(wp_get_upload_dir()['basedir'], $meta['file']);
+    }
+    if ($dir === '') {
+      return false;
+    }
+
+    $replacements = [];
+    $pending_delete = []; // delete ONLY after DB write
+    // Khóa thay URL theo đường dẫn tương đối (2023/12/a.jpg) để không đụng file trùng tên ở thư mục khác
+    // hay tên là chuỗi con của tên khác (24.jpg ⊂ x-1536x1024.jpg).
+    $rel = function ($abs) {
+      return $this->relative_upload_path($abs);
+    };
+    $changed = false;
+
+    // --- Full size ---
+    if ($file && is_file($file) && preg_match('/\.(jpe?g|png)$/i', $file)) {
+      $new_full = $this->materialize_webp($file);
+      if ($new_full === false) {
+        return false;
+      }
+      if (is_string($new_full)) {
+        $replacements[$rel($file)] = $rel($new_full);
+        $meta['file'] = $this->relative_upload_path($new_full);
+        $info = @getimagesize($new_full);
+        if ($info) {
+          $meta['width'] = $info[0];
+          $meta['height'] = $info[1];
+        }
+        update_attached_file($attachment_id, $new_full);
+        $pending_delete[] = $file;
+        $pending_delete[] = $file . '.webp';
+        $file = $new_full;
+        $dir = trailingslashit(dirname($file));
+        $changed = true;
+      }
+    } elseif ($file && preg_match('/\.webp$/i', $file)) {
+      if (!empty($meta['file']) && preg_match('/\.(jpe?g|png)$/i', $meta['file'])) {
+        $old_meta_file = $meta['file'];
+        $old_abs = path_join(wp_get_upload_dir()['basedir'], $old_meta_file);
+        $meta['file'] = $this->relative_upload_path($file);
+        $replacements[$old_meta_file] = $rel($file);
+        $pending_delete[] = $old_abs;
+        $pending_delete[] = $old_abs . '.webp';
+        $changed = true;
+      }
+    } elseif (!empty($meta['file']) && preg_match('/\.(jpe?g|png)$/i', $meta['file'])) {
+      $guess = path_join(wp_get_upload_dir()['basedir'], $meta['file']);
+      $new_full = $this->materialize_webp($guess);
+      if (is_string($new_full)) {
+        $replacements[$meta['file']] = $rel($new_full);
+        $meta['file'] = $this->relative_upload_path($new_full);
+        update_attached_file($attachment_id, $new_full);
+        $pending_delete[] = $guess;
+        $pending_delete[] = $guess . '.webp';
+        $file = $new_full;
+        $dir = trailingslashit(dirname($file));
+        $changed = true;
+      } elseif ($file && preg_match('/\.webp$/i', $file) && is_file($file)) {
+        $replacements[$meta['file']] = $rel($file);
+        $meta['file'] = $this->relative_upload_path($file);
+        $pending_delete[] = $guess;
+        $pending_delete[] = $guess . '.webp';
+        $changed = true;
+      }
+    }
+
+    // --- All sizes ---
+    if (!empty($meta['sizes']) && is_array($meta['sizes'])) {
+      foreach ($meta['sizes'] as $size_name => $size) {
+        if (empty($size['file'])) {
+          continue;
+        }
+        $size_path = $dir . $size['file'];
+
+        if (preg_match('/\.webp$/i', $size['file'])) {
+          if (empty($size['mime-type']) || $size['mime-type'] !== 'image/webp') {
+            $meta['sizes'][$size_name]['mime-type'] = 'image/webp';
+            $changed = true;
+          }
+          continue;
+        }
+
+        if (!preg_match('/\.(jpe?g|png)$/i', $size['file'])) {
+          continue;
+        }
+
+        $new_size = $this->materialize_webp($size_path);
+        if ($new_size === false) {
+          $webp_guess = preg_replace('/\.(jpe?g|png)$/i', '.webp', $size_path);
+          if (is_file($webp_guess)) {
+            $new_size = $webp_guess;
+          } else {
+            continue;
+          }
+        }
+        if ($new_size === null) {
+          continue;
+        }
+        if (is_string($new_size)) {
+          $old_base = wp_basename($size['file']);
+          $new_base = wp_basename($new_size);
+          $replacements[$rel($size_path)] = $rel($new_size);
+          $meta['sizes'][$size_name]['file'] = $new_base;
+          $meta['sizes'][$size_name]['mime-type'] = 'image/webp';
+          $info = @getimagesize($new_size);
+          if ($info) {
+            $meta['sizes'][$size_name]['width'] = $info[0];
+            $meta['sizes'][$size_name]['height'] = $info[1];
+          }
+          $pending_delete[] = $size_path;
+          $pending_delete[] = $size_path . '.webp';
+          $changed = true;
+        }
+      }
+    }
+
+    if (!$changed && !$replacements) {
+      if (get_post_mime_type($attachment_id) !== 'image/webp' && $file && preg_match('/\.webp$/i', $file)) {
+        wp_update_post(['ID' => $attachment_id, 'post_mime_type' => 'image/webp']);
+        return true;
+      }
+      return null;
+    }
+
+    // 1) DB / Media FIRST
+    wp_update_post([
+      'ID' => $attachment_id,
+      'post_mime_type' => 'image/webp',
+    ]);
+    wp_update_attachment_metadata($attachment_id, $meta);
+
+    // Only rewrite URLs when every new basename actually exists on disk.
+    $safe_replacements = [];
+    foreach ($replacements as $old => $new) {
+      if ($old === $new) {
+        continue;
+      }
+      $candidate = trailingslashit(wp_get_upload_dir()['basedir']) . $new;
+      if (!is_file($candidate) || filesize($candidate) < 1) {
+        continue;
+      }
+      $safe_replacements[$old] = $new;
+    }
+    $replacements = $safe_replacements;
+
+    foreach ($replacements as $old => $new) {
+      $this->replace_url_fragment($old, $new);
+      if (preg_match('/\.(jpe?g|png)$/i', $old)) {
+        $this->replace_url_fragment($old . '.webp', $new);
+      }
+    }
+
+    // 2) Delete originals ONLY after DB updated AND target webp exists
+    if ($this->delete_originals()) {
+      foreach (array_unique($pending_delete) as $del) {
+        if (!$del || !is_file($del)) {
+          continue;
+        }
+        // Never delete the webp target itself.
+        if (preg_match('/\.webp$/i', $del) && !preg_match('/\.(jpe?g|png)\.webp$/i', $del)) {
+          continue;
+        }
+        // If deleting a raster, require the real .webp sibling to exist.
+        if (preg_match('/\.(jpe?g|png)$/i', $del)) {
+          $need = preg_replace('/\.(jpe?g|png)$/i', '.webp', $del);
+          if (!is_file($need) || filesize($need) < 1) {
+            continue;
+          }
+        }
+        @unlink($del);
+      }
+    }
+
+    return true;
+  }
+
+  /**
+   * Copy foo.jpg.webp → foo.webp whenever the real .webp is missing.
+   */
+  public function materialize_all_sidecars(): int {
+    $basedir = trailingslashit(wp_get_upload_dir()['basedir']);
+    if (!is_dir($basedir)) {
+      return 0;
+    }
+    $copied = 0;
+    $it = new RecursiveIteratorIterator(
+      new RecursiveDirectoryIterator($basedir, FilesystemIterator::SKIP_DOTS)
+    );
+    foreach ($it as $file) {
+      if (!$file->isFile()) {
+        continue;
+      }
+      $path = wp_normalize_path($file->getPathname());
+      if (!preg_match('/\.(jpe?g|png)\.webp$/i', $path)) {
+        continue;
+      }
+      $target = preg_replace('/\.(jpe?g|png)\.webp$/i', '.webp', $path);
+      if (is_file($target) && filesize($target) > 0) {
+        continue;
+      }
+      if (@copy($path, $target) && is_file($target) && filesize($target) > 0) {
+        $copied++;
+      }
+    }
+    return $copied;
+  }
+
+  private function relative_upload_path($absolute) {
+    $basedir = wp_normalize_path(trailingslashit(wp_get_upload_dir()['basedir']));
+    $absolute = wp_normalize_path($absolute);
+    if (strpos($absolute, $basedir) === 0) {
+      return ltrim(substr($absolute, strlen($basedir)), '/');
+    }
+    return ltrim(str_replace('\\', '/', $absolute), '/');
+  }
+
+  /**
+   * Create real .webp beside source. NEVER deletes originals (caller deletes after DB update).
+   * @return string|null|false new path | skip | fail
+   */
+  public function materialize_webp($path) {
+    $path = wp_normalize_path((string) $path);
+    if ($path === '') {
+      return false;
+    }
+    if (preg_match('/\.webp$/i', $path)) {
+      return is_file($path) ? null : false;
+    }
+    if (!preg_match('/\.(jpe?g|png)$/i', $path)) {
+      return null;
+    }
+
+    $target = preg_replace('/\.(jpe?g|png)$/i', '.webp', $path);
+    $sidecar = $path . '.webp';
+
+    $source = '';
+    if (is_file($path)) {
+      $source = $path;
+    } elseif (is_file($sidecar)) {
+      $source = $sidecar;
+    } elseif (is_file($target) && filesize($target) > 0) {
+      return $target;
+    } else {
+      return false;
+    }
+
+    if (!is_file($target) || filesize($target) < 1) {
+      if (preg_match('/\.webp$/i', $source)) {
+        if (!@copy($source, $target)) {
+          return false;
+        }
+      } else {
+        if (!$this->encode_webp($source, $target)) {
+          return false;
+        }
+      }
+    }
+
+    if (!is_file($target) || filesize($target) < 1) {
+      return false;
+    }
+
+    return $target;
+  }
+
+  public function replace_file_with_webp($path, $replace_refs = true) {
+    $old_base = wp_basename($path);
+    $webp = preg_replace('/\.(jpe?g|png)$/i', '.webp', $path);
+
+    // Ensure real .webp exists (from jpg or from sidecar .jpg.webp).
+    $new = $this->materialize_webp($path);
+    if ($new === false && is_file($webp) && filesize($webp) > 0) {
+      $new = $webp;
+    }
+    if ($new === false) {
+      return false;
+    }
+    if ($new === null) {
+      $new = $path; // already webp path passed in
+    }
+
+    $new_base = wp_basename($new);
+    $old_rel = $this->relative_upload_path($path);
+    $new_rel = $this->relative_upload_path($new);
+
+    // 1) DB first — theo đường dẫn tương đối, không chỉ tên file
+    if ($replace_refs && preg_match('/\.(jpe?g|png)$/i', $old_base)) {
+      $this->replace_url_fragment($old_rel, $new_rel);
+      $this->replace_url_fragment($old_rel . '.webp', $new_rel);
+    }
+
+    // 2) Then delete originals
+    if ($this->delete_originals()) {
+      if (is_file($path) && preg_match('/\.(jpe?g|png)$/i', $path)) {
+        @unlink($path);
+      }
+      if (is_file($path . '.webp')) {
+        @unlink($path . '.webp');
+      }
+    }
+
+    return true;
+  }
+
+  private function encode_webp($source, $dest) {
+    if (!function_exists('imagewebp')) {
+      return false;
+    }
+    $info = @getimagesize($source);
+    if (!$info || empty($info['mime'])) {
+      return is_file($source) && @copy($source, $dest);
+    }
+    $img = null;
+    if ($info['mime'] === 'image/jpeg') {
+      $img = @imagecreatefromjpeg($source);
+    } elseif ($info['mime'] === 'image/png') {
+      $img = @imagecreatefrompng($source);
+      if ($img) {
+        imagepalettetotruecolor($img);
+        imagealphablending($img, true);
+        imagesavealpha($img, true);
+      }
+    } elseif ($info['mime'] === 'image/webp') {
+      return @copy($source, $dest);
+    } else {
+      return false;
+    }
+    if (!$img) {
+      return false;
+    }
+    $tmp = $dest . '.tmp';
+    $ok = @imagewebp($img, $tmp, $this->quality());
+    imagedestroy($img);
+    if (!$ok || !is_file($tmp)) {
+      @unlink($tmp);
+      return false;
+    }
+    if (is_file($dest)) {
+      @unlink($dest);
+    }
+    if (!@rename($tmp, $dest)) {
+      @unlink($tmp);
+      return false;
+    }
+    return true;
+  }
+
+  public function on_metadata($metadata, $attachment_id) {
+    $file = get_attached_file($attachment_id);
+    if (!$file) {
+      return $metadata;
+    }
+    $dir = trailingslashit(dirname($file));
+
+    if (preg_match('/\.(jpe?g|png)$/i', $file)) {
+      $new_full = $this->materialize_webp($file);
+      if (is_string($new_full)) {
+        $metadata['file'] = $this->relative_upload_path($new_full);
+        update_attached_file($attachment_id, $new_full);
+        wp_update_post(['ID' => $attachment_id, 'post_mime_type' => 'image/webp']);
+        $dir = trailingslashit(dirname($new_full));
+      }
+    }
+
+    if (!empty($metadata['sizes']) && is_array($metadata['sizes'])) {
+      foreach ($metadata['sizes'] as $name => $size) {
+        if (empty($size['file']) || !preg_match('/\.(jpe?g|png)$/i', $size['file'])) {
+          continue;
+        }
+        $new_size = $this->materialize_webp($dir . $size['file']);
+        if (is_string($new_size)) {
+          $metadata['sizes'][$name]['file'] = wp_basename($new_size);
+          $metadata['sizes'][$name]['mime-type'] = 'image/webp';
+        }
+      }
+    }
+    return $metadata;
+  }
+
+  private function replace_url_fragment($old, $new) {
+    global $wpdb;
+    $old = (string) $old;
+    $new = (string) $new;
+    if ($old === '' || $old === $new) {
+      return;
+    }
+
+    $wpdb->query($wpdb->prepare(
+      "UPDATE {$wpdb->posts} SET post_content = REPLACE(post_content, %s, %s)",
+      $old,
+      $new
+    ));
+    $wpdb->query($wpdb->prepare(
+      "UPDATE {$wpdb->posts} SET guid = REPLACE(guid, %s, %s) WHERE post_type = 'attachment'",
+      $old,
+      $new
+    ));
+
+    $rows = $wpdb->get_results($wpdb->prepare(
+      "SELECT meta_id, meta_value FROM {$wpdb->postmeta} WHERE meta_value LIKE %s",
+      '%' . $wpdb->esc_like($old) . '%'
+    ));
+    foreach ($rows as $row) {
+      $updated = $this->deep_replace($row->meta_value, $old, $new);
+      if ($updated !== $row->meta_value) {
+        $wpdb->update($wpdb->postmeta, ['meta_value' => $updated], ['meta_id' => $row->meta_id]);
+      }
+    }
+
+    // Elementor/Smart Slider lưu JSON nên "/" thành "\/": thay luôn dạng đó.
+    $old_json = str_replace('/', '\/', $old);
+    if ($old_json !== $old) {
+      $rows = $wpdb->get_results($wpdb->prepare(
+        "SELECT meta_id, meta_value FROM {$wpdb->postmeta} WHERE meta_value LIKE %s",
+        '%' . $wpdb->esc_like($old_json) . '%'
+      ));
+      foreach ($rows as $row) {
+        $updated = $this->deep_replace($row->meta_value, $old_json, str_replace('/', '\/', $new));
+        if ($updated !== $row->meta_value) {
+          $wpdb->update($wpdb->postmeta, ['meta_value' => $updated], ['meta_id' => $row->meta_id]);
+        }
+      }
+    }
+    foreach ($this->extra_ref_tables() as $table) {
+      foreach ((array) $wpdb->get_results('SHOW COLUMNS FROM `' . esc_sql($table) . '`', ARRAY_A) as $col) {
+        if (!preg_match('/char|text/i', $col['Type'])) {
+          continue;
+        }
+        $c = '`' . esc_sql($col['Field']) . '`';
+        foreach (array_unique([$old => $new, $old_json => str_replace('/', '\/', $new)], SORT_REGULAR) as $o => $n) {
+          $wpdb->query($wpdb->prepare('UPDATE `' . esc_sql($table) . "` SET $c = REPLACE($c, %s, %s) WHERE $c LIKE %s", $o, $n, '%' . $wpdb->esc_like($o) . '%'));
+        }
+      }
+    }
+
+    $opts = $wpdb->get_results($wpdb->prepare(
+      "SELECT option_id, option_value FROM {$wpdb->options} WHERE option_value LIKE %s",
+      '%' . $wpdb->esc_like($old) . '%'
+    ));
+    foreach ($opts as $row) {
+      $updated = $this->deep_replace($row->option_value, $old, $new);
+      if ($updated !== $row->option_value) {
+        $wpdb->update($wpdb->options, ['option_value' => $updated], ['option_id' => $row->option_id]);
+      }
+    }
+  }
+
+  private function deep_replace($value, $old, $new) {
+    $data = maybe_unserialize($value);
+    if ($data !== $value && (is_array($data) || is_object($data))) {
+      $data = $this->recursive_str_replace($data, $old, $new);
+      return maybe_serialize($data);
+    }
+    if (is_string($value)) {
+      return str_replace($old, $new, $value);
+    }
+    return $value;
+  }
+
+  private function recursive_str_replace($data, $old, $new) {
+    if (is_string($data)) {
+      return str_replace($old, $new, $data);
+    }
+    if (is_array($data)) {
+      foreach ($data as $k => $v) {
+        $data[$k] = $this->recursive_str_replace($v, $old, $new);
+      }
+      return $data;
+    }
+    if (is_object($data)) {
+      foreach ($data as $k => $v) {
+        $data->$k = $this->recursive_str_replace($v, $old, $new);
+      }
+      return $data;
+    }
+    return $data;
+  }
+}
+
+}
+
+if (wn_module_on('webp') && !$wn_webp_standalone) {
+  new WebNow_WebP_Batch();
+}
