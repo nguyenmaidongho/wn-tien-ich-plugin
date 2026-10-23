@@ -75,4 +75,117 @@
       applyConds();
     }
   });
+
+  // Cập nhật từ GitHub: kiểm tra ngầm khi mở trang, có bản mới thì hiện nút nhỏ cạnh số phiên bản.
+  var upd = null;
+  var $panel = $('#wn-upd');
+  var $pill = $('.wn-upd-pill');
+
+  function esc(s) {
+    return $('<div>').text(s == null ? '' : String(s)).html();
+  }
+
+  function ago(iso) {
+    var s = (Date.now() - new Date(iso).getTime()) / 1000;
+    if (!iso || isNaN(s)) {
+      return '';
+    }
+    if (s < 3600) {
+      return Math.max(1, Math.round(s / 60)) + ' phút trước';
+    }
+    if (s < 86400) {
+      return Math.round(s / 3600) + ' giờ trước';
+    }
+    return Math.round(s / 86400) + ' ngày trước';
+  }
+
+  function renderUpd(err) {
+    if (!upd) {
+      $panel.html('Đang kiểm tra…');
+      return;
+    }
+    var r = upd.remote || {};
+    var html;
+    if (upd.available) {
+      html = '<strong>Có bản mới v' + esc(r.version) + '</strong> <span class="wn-upd-meta">(đang dùng v' + esc(upd.local) + ')</span>' +
+        (r.message ? '<div class="wn-upd-msg">' + esc(r.message) + '</div>' : '') +
+        '<div class="wn-upd-meta">' + esc(ago(r.date)) + ' · <a href="' + esc(upd.compare) + '" target="_blank" rel="noopener">Xem thay đổi ↗</a></div>' +
+        '<div class="wn-upd-links"><button type="button" class="wn-btn wn-btn-primary" data-upd-run>Cập nhật ngay</button>';
+    } else if (r.error) {
+      html = '<strong>Không kiểm tra được cập nhật</strong><div class="wn-upd-meta">' + esc(r.error) + '</div><div class="wn-upd-links">';
+    } else {
+      html = '<strong>Đang dùng bản mới nhất</strong> <span class="wn-upd-meta">v' + esc(upd.local) + '</span><div class="wn-upd-links">';
+    }
+    html += '<a href="#" data-upd-check>Kiểm tra lại</a>';
+    if (upd.backup) {
+      html += '<a href="#" data-upd-rollback>Khôi phục v' + esc(upd.backup.version) + '</a>';
+    }
+    html += '</div>';
+    if (r.checked) {
+      html += '<div class="wn-upd-meta">Kiểm tra lúc ' + new Date(r.checked * 1000).toLocaleTimeString('vi-VN', { hour: '2-digit', minute: '2-digit' }) + '</div>';
+    }
+    if (err) {
+      html += '<div class="wn-upd-err">' + esc(err) + '</div>';
+    }
+    $panel.html(html);
+    $pill.prop('hidden', !upd.available).find('span').text('Có bản mới v' + (r.version || ''));
+  }
+
+  function checkUpd(force) {
+    if (!$panel.length || !WN_ADMIN.updateNonce) {
+      return;
+    }
+    $.post(WN_ADMIN.ajax, { action: 'wn_update_check', nonce: WN_ADMIN.updateNonce, force: force ? 1 : 0 })
+      .done(function (res) {
+        if (res && res.success) {
+          upd = res.data;
+          renderUpd();
+        }
+      });
+  }
+
+  $(document).on('click', '[data-upd-toggle]', function () {
+    $panel.prop('hidden', !$panel.prop('hidden'));
+    renderUpd();
+  });
+
+  $(document).on('click', function (e) {
+    if (!$panel.prop('hidden') && !$(e.target).closest('#wn-upd, [data-upd-toggle]').length) {
+      $panel.prop('hidden', true);
+    }
+  });
+
+  $(document).on('click', '[data-upd-check]', function (e) {
+    e.preventDefault();
+    upd = null;
+    renderUpd();
+    checkUpd(true);
+  });
+
+  function runUpd(action, $btn, label, doneText) {
+    $btn.prop('disabled', true).text(label);
+    $.post(WN_ADMIN.ajax, { action: action, nonce: WN_ADMIN.updateNonce })
+      .done(function (res) {
+        if (res && res.success) {
+          toast(doneText + res.data.version + '. Đang tải lại…');
+          setTimeout(function () { location.reload(); }, 1200);
+        } else {
+          renderUpd((res && res.data) || 'Không cập nhật được.');
+        }
+      })
+      .fail(function (x) { renderUpd('Lỗi kết nối (' + x.status + '), thử lại sau.'); });
+  }
+
+  $(document).on('click', '[data-upd-run]', function () {
+    runUpd('wn_update_run', $(this), 'Đang tải và kiểm tra…', 'Đã cập nhật lên v');
+  });
+
+  $(document).on('click', '[data-upd-rollback]', function (e) {
+    e.preventDefault();
+    if (confirm('Quay lại bản v' + upd.backup.version + '?')) {
+      runUpd('wn_update_rollback', $(this), 'Đang khôi phục…', 'Đã khôi phục v');
+    }
+  });
+
+  $(function () { checkUpd(false); });
 })(jQuery);
