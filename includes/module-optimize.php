@@ -372,14 +372,22 @@ final class WN_Optimize {
     ];
   }
 
+  /** Tùy chọn dạng danh sách của LiteSpeed: lưu là mảng, chuỗi JSON hoặc chuỗi nhiều dòng tùy phiên bản. */
+  public static function lscache_list($key) {
+    $v = get_option('litespeed.conf.' . $key, []);
+    if (is_string($v) && strpos(ltrim($v), '[') === 0) {
+      $v = json_decode($v, true);
+    }
+    return is_array($v) ? array_values(array_filter(array_map('trim', $v))) : array_values(array_filter(array_map('trim', explode("\n", (string) $v))));
+  }
+
   /** Các tùy chọn LiteSpeed đang khác cấu hình khuyến nghị. */
   public static function lscache_diff() {
     $diff = [];
     foreach (self::lscache_recommended() as $key => $want) {
       $have = get_option('litespeed.conf.' . $key, null);
       if (is_array($want)) {
-        $have = is_array($have) ? $have : array_filter(array_map('trim', explode("\n", (string) $have)));
-        if (array_diff($want, $have)) {
+        if (array_diff($want, self::lscache_list($key))) {
           $diff[] = $key;
         }
       } elseif ((string) (int) $have !== (string) $want) {
@@ -891,9 +899,30 @@ final class WN_Optimize {
     return ['count' => $count, 'oldest' => $oldest];
   }
 
+  /**
+   * PHP CLI cùng phiên bản với web. Cron chạy sai phiên bản sẽ chết âm thầm khi plugin đòi PHP mới
+   * (vd. Contact Form 7 6.2 cần PHP 8.3 nhưng cron gọi PHP 8.2).
+   */
   public static function php_cli_path() {
-    $guess = '/usr/local/php' . PHP_MAJOR_VERSION . PHP_MINOR_VERSION . '/bin/php';
-    return @is_file($guess) ? $guess : 'php';
+    $ver = PHP_MAJOR_VERSION . PHP_MINOR_VERSION;
+    // LiteSpeed: bản CLI luôn nằm cạnh lsphp (alt-php CloudLinux, DirectAdmin). Không kiểm tra
+    // is_file vì open_basedir thường chặn đọc ngoài thư mục home.
+    if (defined('PHP_BINARY') && PHP_BINARY && basename(PHP_BINARY) === 'lsphp') {
+      return dirname(PHP_BINARY) . '/php';
+    }
+    $candidates = [];
+    if (defined('PHP_BINARY') && PHP_BINARY && preg_match('/php-cgi[\d.]*$/', PHP_BINARY)) {
+      $candidates[] = dirname(PHP_BINARY) . '/php';
+    }
+    $candidates[] = "/opt/alt/php{$ver}/usr/bin/php";   // CloudLinux PHP Selector
+    $candidates[] = "/usr/local/php{$ver}/bin/php";     // DirectAdmin
+    $candidates[] = "/opt/cpanel/ea-php{$ver}/root/usr/bin/php"; // cPanel
+    foreach ($candidates as $c) {
+      if (@is_file($c)) {
+        return $c;
+      }
+    }
+    return (defined('PHP_BINARY') && PHP_BINARY && basename(PHP_BINARY) === 'php') ? PHP_BINARY : 'php';
   }
 
   public static function cron_command() {
@@ -916,8 +945,8 @@ final class WN_Optimize {
     $blocked = (!$res['ok'] && stripos((string) $res['error'], 'timed out') === false) || ($res['ok'] && $res['code'] >= 400);
     if ($disabled) {
       $out[] = self::check('cron_mode', 'Cách chạy cron', $over['count'] ? 'bad' : 'good', 'Cron hệ thống',
-        $over['count'] ? 'DISABLE_WP_CRON đang bật nhưng cron hệ thống không chạy.' : 'WP-cron tắt, chạy bằng cron của máy chủ: ổn định nhất.',
-        ['manual' => $over['count'] ? 'Thêm cron trong DirectAdmin → Cron Jobs: ' . self::cron_command() : '', 'command' => $over['count'] ? self::cron_command() : '']);
+        $over['count'] ? 'DISABLE_WP_CRON đang bật nhưng cron hệ thống không chạy hoặc đang lỗi (hay gặp nhất: cron gọi PHP khác phiên bản với web, plugin mới đòi PHP cao hơn nên bị lỗi nghiêm trọng).' : 'WP-cron tắt, chạy bằng cron của máy chủ: ổn định nhất.',
+        ['manual' => $over['count'] ? 'Kiểm tra DirectAdmin → Cron Jobs: dòng cron phải dùng đúng PHP ' . PHP_MAJOR_VERSION . '.' . PHP_MINOR_VERSION . ' như web.' : '', 'command' => $over['count'] ? self::cron_command() : '']);
     } elseif ($blocked) {
       $out[] = self::check('cron_mode', 'Cách chạy cron', 'bad', 'wp-cron.php bị chặn' . ($res['ok'] ? ' (' . $res['code'] . ')' : ''),
         'Máy chủ/tường lửa chặn wp-cron.php nên WP-cron không tự chạy được. Cần cron thật của máy chủ.',

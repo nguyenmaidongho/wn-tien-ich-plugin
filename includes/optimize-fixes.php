@@ -339,9 +339,7 @@ final class WN_Optimize_Fixes {
     $vals = [];
     foreach ($want as $key => $v) {
       if (is_array($v)) {
-        $have = get_option('litespeed.conf.' . $key, []);
-        $have = is_array($have) ? $have : array_filter(array_map('trim', explode("\n", (string) $have)));
-        $v = implode("\n", array_values(array_unique(array_merge($have, $v))));
+        $v = implode("\n", array_values(array_unique(array_merge(WN_Optimize::lscache_list($key), $v))));
       }
       $vals[$key] = (string) $v;
     }
