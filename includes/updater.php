@@ -16,7 +16,7 @@ if (!defined('ABSPATH')) {
 }
 
 final class WN_Updater {
-  const REPO = 'nguyenmaidongho/tien-ich-webnow-plugin';
+  const REPO = 'nguyenmaidongho/wn-tien-ich-plugin';
   const BRANCH = 'main';
   const NONCE = 'wn_update';
   const CACHE = 'wn_update_remote';          // transient: thông tin bản trên GitHub

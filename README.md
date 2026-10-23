@@ -2,7 +2,8 @@
 
 Plugin WordPress gom các tiện ích của [webnow.vn](https://webnow.vn) vào một chỗ: **tối ưu web tự động**, tìm kiếm nhanh, nút liên hệ, trang trí Tết, màn hình chờ, Font Awesome, ảnh WebP, dọn ảnh không dùng và tùy biến trang đăng nhập/admin. Mục tiêu là bớt plugin lẻ để web nhẹ hơn.
 
-- Phiên bản hiện tại: **1.5**
+- Phiên bản hiện tại: **1.6**
+- Repo: [nguyenmaidongho/wn-tien-ich-plugin](https://github.com/nguyenmaidongho/wn-tien-ich-plugin), tự cập nhật từ nhánh `main` (xem [Cập nhật plugin](#cập-nhật-plugin))
 - Tác giả: Sai Gon Web Co., Ltd
 - Trang quản trị: menu **WebNow** ở thanh bên trái admin
 
@@ -41,7 +42,7 @@ Phần nén ảnh/WebP cần PHP có **Imagick** hoặc **GD** hỗ trợ WebP. 
 
 ### Cách 1: trang quản trị WordPress
 
-1. Trên GitHub bấm **Code → Download ZIP**. File tải về giải nén ra thư mục `tien-ich-webnow-plugin-main`.
+1. Trên GitHub bấm **Code → Download ZIP**. File tải về giải nén ra thư mục `wn-tien-ich-plugin-main`.
 2. Đổi tên thư mục thành `wn-tien-ich-main`, nén lại thành `wn-tien-ich-main.zip`.
 3. Vào **Plugin → Cài mới → Tải plugin lên**, chọn file zip, kích hoạt.
 
@@ -51,7 +52,7 @@ Nếu site đặt `DISALLOW_FILE_MODS` (không có nút Tải plugin lên), dùn
 
 ```bash
 cd ~/public_html/wp-content/plugins
-git clone --depth 1 https://github.com/nguyenmaidongho/tien-ich-webnow-plugin.git wn-tien-ich-main
+git clone --depth 1 https://github.com/nguyenmaidongho/wn-tien-ich-plugin.git wn-tien-ich-main
 rm -rf wn-tien-ich-main/.git
 wp plugin activate wn-tien-ich-main
 ```
@@ -62,14 +63,54 @@ Nếu site **đã có sẵn** nút liên hệ, Font Awesome, chuyển WebP khi u
 
 ## Cập nhật plugin
 
-> **Plugin KHÔNG tự kiểm tra cập nhật và KHÔNG tự cập nhật.** Plugin không nằm trên wordpress.org và chưa có bộ tự cập nhật từ GitHub, nên WordPress không biết có bản mới. Mỗi lần có phiên bản mới phải cập nhật tay theo một trong các cách dưới đây.
+### Tự cập nhật từ GitHub (từ bản 1.6)
 
-### Cập nhật qua SSH (khuyến nghị: an toàn, có bản lùi)
+Plugin tự kiểm tra repo này (nhánh `main`). Push lên `main` là các site thấy bản mới, **chỉ hiện một thông báo nhỏ khi mở trang WebNow**: nút đỏ **"Có bản mới vX"** cạnh số phiên bản. Plugin không báo ở Bảng tin, không báo ở trang Plugin, không gửi email.
+
+Cách dùng:
+1. Mở **WebNow**. Có bản mới thì cạnh số phiên bản hiện nút **Có bản mới**.
+2. Bấm vào: xem số phiên bản, nội dung commit mới nhất, link **Xem thay đổi** (so sánh trên GitHub).
+3. Bấm **Cập nhật ngay**, xong trang tự tải lại.
+
+Bấm vào số phiên bản bất cứ lúc nào để **Kiểm tra lại** hoặc **Khôi phục bản trước**.
+
+Khi nào coi là có bản mới:
+- `Version:` trong `wn-tien-ich.php` trên GitHub **lớn hơn** bản đang chạy.
+- **Hoặc** cùng Version nhưng `main` có **commit mới hơn** bản đang cài. Push sửa lỗi nhỏ không cần tăng Version vẫn được báo.
+
+Bộ cập nhật làm gì, theo thứ tự:
+1. Tải zip **đúng commit** từ GitHub (repo public, không cần token).
+2. Kiểm tra mọi file PHP đúng cú pháp với phiên bản PHP của site. Có lỗi thì **hủy, không đụng gì**.
+3. Chuyển thư mục plugin hiện tại sang `wp-content/upgrade/wn-backup-<phiên bản>-<thời gian>-…`, đưa bản mới vào chỗ cũ (giữ nguyên tên thư mục).
+4. Xóa OPcache của các file plugin rồi **gọi thử code mới** (`admin-ajax.php?action=wn_update_ping`). Code mới làm WordPress lỗi thì **tự đổi lại bản cũ ngay**.
+5. Ghi lại commit đã cài, giữ **một** bản trước để khôi phục, xóa cache trang.
+
+Cơ chế này không đi qua hệ thống cập nhật của WordPress, nên vẫn chạy trên site có Foxtool hay plugin "ẩn cập nhật", và cả site đặt `DISALLOW_FILE_MODS`. Chỉ tài khoản có quyền `manage_options` mới thấy và bấm được.
+
+Kết quả kiểm tra được cache **6 giờ** (lỗi mạng thì 15 phút), vì API GitHub chỉ cho 60 lượt/giờ trên mỗi IP mà nhiều site dùng chung IP hosting. Muốn thấy ngay sau khi push thì bấm **Kiểm tra lại**.
+
+**Thử bản mới trên site staging trước:** push lên một nhánh khác (ví dụ `staging`), rồi trên site thử thêm vào `wp-config.php`:
+
+```php
+define('WN_UPDATE_BRANCH', 'staging');
+```
+
+Site đó sẽ lấy cập nhật từ nhánh `staging`; các site khác vẫn theo `main`.
+
+**Quy trình phát hành gợi ý:**
+1. Sửa code.
+2. Tăng `Version:` trong `wn-tien-ich.php` nếu là bản có tính năng mới.
+3. Ghi vào [Lịch sử phiên bản](#lịch-sử-phiên-bản).
+4. Push lên `main`. Commit message đầu tiên sẽ hiện trong thông báo cập nhật, nên viết rõ ràng.
+
+> Site đang chạy **bản 1.5 trở về trước** chưa có bộ tự cập nhật. Phải cập nhật tay **một lần** lên 1.6 theo cách bên dưới; từ đó về sau mới tự cập nhật được.
+
+### Cập nhật tay qua SSH (an toàn, có bản lùi)
 
 ```bash
 cd ~/public_html/wp-content/plugins
 # 1. Tải bản mới vào thư mục tạm
-rm -rf ~/tmp/wn-new && git clone -q --depth 1 https://github.com/nguyenmaidongho/tien-ich-webnow-plugin.git ~/tmp/wn-new && rm -rf ~/tmp/wn-new/.git
+rm -rf ~/tmp/wn-new && git clone -q --depth 1 https://github.com/nguyenmaidongho/wn-tien-ich-plugin.git ~/tmp/wn-new && rm -rf ~/tmp/wn-new/.git
 # 2. Kiểm tra cú pháp trước khi thay (phải không có lỗi)
 for f in ~/tmp/wn-new/wn-tien-ich.php ~/tmp/wn-new/includes/*.php ~/tmp/wn-new/includes/admin/*.php; do php -l "$f" >/dev/null || echo "LỖI: $f"; done
 # 3. Giữ bản cũ để lùi lại nếu cần, rồi thay
@@ -327,6 +368,9 @@ Cách kiểm tra nhanh site đang có gì:
 | `wn_opt_last_scan`, `wn_opt_baseline` | Tối ưu web: kết quả phân tích gần nhất / mốc trước khi áp dụng |
 | `wn_opt_history` | Tối ưu web: 10 lần tối ưu gần nhất (điểm trước/sau, người chạy) |
 | `wn_opt_tweaks` | Tối ưu web: tinh chỉnh nhẹ đang bật (`revisions`, `heartbeat`, `emoji`) |
+| `wn_update_installed` | Bộ cập nhật: commit + phiên bản đã cài qua bộ cập nhật |
+| `wn_update_backup` | Bộ cập nhật: thư mục bản trước (để khôi phục) |
+| transient `wn_update_remote` | Bộ cập nhật: thông tin bản mới nhất trên GitHub (cache 6 giờ) |
 
 Thư mục trong uploads: `wn-optimize/` (Tối ưu web), `wn-quarantine/` (Dọn ảnh), file chỉ mục tìm kiếm.
 
@@ -340,6 +384,7 @@ Plugin không có `uninstall.php`. Gỡ plugin thì dữ liệu trên vẫn còn
 wn-tien-ich.php              Khai báo plugin, hằng số, nạp các file
 includes/
   utils.php                  wn_plugin_url(), wn_clear_page_cache()
+  updater.php                Tự cập nhật từ GitHub (chỉ nạp trong admin)
   modules.php                Danh sách tính năng + wn_module_on()
   loader.php                 Branding, ẩn logo, nhắc plugin, màn hình chờ; nạp các module
   module-optimize.php        Tối ưu web: giao diện, AJAX, các bước kiểm tra, tinh chỉnh thường trực
@@ -372,6 +417,11 @@ Thêm một mục kiểm tra/bước sửa cho Tối ưu web:
 ---
 
 ## Lịch sử phiên bản
+
+### 1.6
+- **Tự cập nhật từ GitHub**: push lên `main` là site thấy bản mới. Chỉ báo bằng một nút nhỏ cạnh số phiên bản trong trang WebNow. Kiểm tra cú pháp trước khi cài, gọi thử code mới và tự trả bản cũ nếu lỗi, có nút Khôi phục bản trước. Hằng `WN_UPDATE_BRANCH` để site staging theo nhánh khác.
+- Repo đổi tên thành `wn-tien-ich-plugin`.
+- Từ 1.5 trở về trước phải cập nhật tay một lần lên 1.6.
 
 ### 1.5
 - **Thêm Tối ưu web**: trình hướng dẫn Phân tích → Kế hoạch → Áp dụng → Kết quả, tự chọn cách tối ưu theo LiteSpeed/Apache/Nginx, sao lưu trước khi dọn. Module mặc định **bật** (chỉ hiện trong admin; chỉ thay đổi site khi bấm Áp dụng).
