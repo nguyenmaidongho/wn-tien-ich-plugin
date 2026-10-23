@@ -54,6 +54,7 @@ add_action('admin_enqueue_scripts', function ($hook) {
   wp_localize_script('wn-admin', 'WN_ADMIN', [
     'ajax' => admin_url('admin-ajax.php'),
     'nonce' => wp_create_nonce('wn_toggle_module'),
+    'updateNonce' => wp_create_nonce(WN_Updater::NONCE),
   ]);
 });
 
@@ -129,7 +130,11 @@ function wn_render_admin_page() {
       <div class="wn-hero-brand">
         <span class="wn-hero-logo">N</span>
         <div>
-          <div class="wn-hero-title">Tiện ích WebNow <span class="wn-ver">v<?php echo esc_html($plugin['Version']); ?></span></div>
+          <div class="wn-hero-title">Tiện ích WebNow
+            <button type="button" class="wn-ver" data-upd-toggle title="Kiểm tra cập nhật">v<?php echo esc_html($plugin['Version']); ?></button>
+            <button type="button" class="wn-upd-pill" data-upd-toggle hidden><i></i><span></span></button>
+          </div>
+          <div class="wn-upd-panel" id="wn-upd" hidden></div>
           <div class="wn-hero-sub">Gom các tính năng nhỏ vào một chỗ — bớt plugin, web nhẹ hơn.</div>
         </div>
       </div>
