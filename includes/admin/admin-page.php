@@ -13,6 +13,7 @@ function wn_admin_url($tab = 'modules', $args = []) {
 function wn_admin_tabs() {
   return [
     'modules' => ['label' => 'Tính năng', 'icon' => 'dashicons-screenoptions'],
+    'optimize' => ['label' => 'Tối ưu web', 'icon' => 'dashicons-performance'],
     'search' => ['label' => 'Tìm kiếm', 'icon' => 'dashicons-search'],
     'contact' => ['label' => 'Nút liên hệ', 'icon' => 'dashicons-phone'],
     'tet' => ['label' => 'Trang trí Tết', 'icon' => 'dashicons-star-filled'],
@@ -251,6 +252,13 @@ function wn_render_tab_search() {
     </div>
   </form>
   <?php
+}
+
+function wn_render_tab_optimize() {
+  wn_module_bar('optimize');
+  if (wn_module_on('optimize')) {
+    WN_Optimize::render();
+  }
 }
 
 function wn_render_tab_contact() {

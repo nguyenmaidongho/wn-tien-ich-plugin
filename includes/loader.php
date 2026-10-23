@@ -76,8 +76,9 @@ add_action('admin_notices', function () {
   if (!is_plugin_active('seo-by-rank-math/rank-math.php')) {
     $missing[] = '<a href="https://wordpress.org/plugins/seo-by-rank-math/">Rank Math SEO</a>';
   }
-  if (!is_plugin_active('wp-fastest-cache/wpFastestCache.php')) {
-    $missing[] = '<a href="https://wordpress.org/plugins/wp-fastest-cache/">WP Fastest Cache</a>';
+  // Máy chủ LiteSpeed dùng LiteSpeed Cache thay cho WP Fastest Cache.
+  if (!is_plugin_active('wp-fastest-cache/wpFastestCache.php') && !is_plugin_active('litespeed-cache/litespeed-cache.php')) {
+    $missing[] = '<a href="https://wordpress.org/plugins/wp-fastest-cache/">WP Fastest Cache</a> (hoặc LiteSpeed Cache)';
   }
   if ($missing) {
     echo '<div class="notice notice-error"><p>Vui lòng cài đặt và kích hoạt plugin ' . implode(', ', $missing) . '.</p></div>';
@@ -128,3 +129,4 @@ require_once WN_PLUGIN_DIR . '/includes/module-tet.php';
 require_once WN_PLUGIN_DIR . '/includes/module-contact.php';
 require_once WN_PLUGIN_DIR . '/includes/module-webp.php';
 require_once WN_PLUGIN_DIR . '/includes/module-cleanup.php';
+require_once WN_PLUGIN_DIR . '/includes/module-optimize.php';
