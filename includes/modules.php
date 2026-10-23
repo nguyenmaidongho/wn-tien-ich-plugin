@@ -5,6 +5,13 @@
  */
 function wn_modules() {
   return [
+    'optimize' => [
+      'title' => 'Tối ưu web',
+      'desc' => 'Phân tích tốc độ rồi tự áp dụng: dọn database, LiteSpeed Cache, nén ảnh + WebP, sửa cron. Sao lưu trước khi đụng vào dữ liệu.',
+      'icon' => 'dashicons-performance',
+      'default' => '1',
+      'tab' => 'optimize',
+    ],
     'search' => [
       'title' => 'Tìm kiếm nhanh',
       'desc' => 'Gợi ý kết quả ngay khi gõ, không tải lại trang. Thay plugin Search Popup ThunderBolt.',
@@ -72,7 +79,7 @@ function wn_modules() {
     ],
     'plugin_warning' => [
       'title' => 'Nhắc plugin cần thiết',
-      'desc' => 'Cảnh báo trong admin nếu Rank Math hoặc WP Fastest Cache bị tắt.',
+      'desc' => 'Cảnh báo trong admin nếu Rank Math hoặc plugin cache (WP Fastest Cache / LiteSpeed Cache) bị tắt.',
       'icon' => 'dashicons-warning',
       'default' => '1',
     ],

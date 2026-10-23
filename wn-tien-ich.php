@@ -3,8 +3,8 @@
 /**
  * Plugin Name: Tiện ích WebNow
  * Plugin URI: https://webnow.vn/
- * Description: Gom các tiện ích nhỏ vào một plugin: tìm kiếm nhanh, trang trí Tết, màn hình chờ, Font Awesome, ảnh WebP, dọn ảnh không dùng, tùy biến admin/đăng nhập.
- * Version: 1.4
+ * Description: Gom các tiện ích nhỏ vào một plugin: tối ưu web tự động, tìm kiếm nhanh, trang trí Tết, màn hình chờ, Font Awesome, ảnh WebP, dọn ảnh không dùng, tùy biến admin/đăng nhập.
+ * Version: 1.5
  * Author: Sai Gon Web Co., Ltd
  * Author URI: https://webnow.vn/
  * Text Domain: wn
