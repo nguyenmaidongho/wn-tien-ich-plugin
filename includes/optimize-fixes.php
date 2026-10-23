@@ -752,7 +752,9 @@ final class WN_Optimize_Fixes {
     $log = [];
     if (!$more) {
       $log[] = 'Đã chạy bù ' . self::n($s['ran']) . ' tác vụ nền.';
-      $log[] = 'Để cron không chết lại: DirectAdmin → Cron Jobs, thêm: ' . WN_Optimize::cron_command();
+      $log[] = (defined('DISABLE_WP_CRON') && DISABLE_WP_CRON)
+        ? 'Kiểm tra dòng cron trong DirectAdmin → Cron Jobs dùng đúng PHP của web: ' . WN_Optimize::cron_command()
+        : 'Để cron không chết lại: DirectAdmin → Cron Jobs, thêm: ' . WN_Optimize::cron_command();
     }
     return ['done' => !$more, 'progress' => $more ? 50 : 100, 'state' => $s, 'log' => $log, 'note' => self::n($s['ran']) . ' tác vụ'];
   }
