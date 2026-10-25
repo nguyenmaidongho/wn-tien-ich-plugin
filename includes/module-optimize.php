@@ -830,6 +830,11 @@ final class WN_Optimize {
     return true;
   }
 
+  /** Module Ảnh WebP đang chạy: bước ảnh của Tối ưu web dùng nó để đổi hẳn sang WebP và xóa ảnh gốc. */
+  public static function webp_replace_mode() {
+    return class_exists('WebNow_WebP_Batch') && WebNow_WebP_Batch::$instance;
+  }
+
   public static function webp_rule_present() {
     $ht = self::uploads_base() . '.htaccess';
     return is_file($ht) && strpos((string) file_get_contents($ht), '# BEGIN WebNow WebP') !== false;
@@ -845,14 +850,21 @@ final class WN_Optimize {
     // Ảnh đã thử mà không nhỏ hơn được thì coi như đã xử lý, không báo lại mãi.
     $compressed = WN_Optimize_Fixes::done_list('compressed');
     $webp_skip = WN_Optimize_Fixes::done_list('webp-skip');
+    $hard = wn_hardcoded_upload_images();
+    // Module Ảnh WebP bật: đổi hẳn ảnh sang .webp, sửa link, xóa ảnh gốc. Tắt: chỉ tạo bản .jpg.webp đi kèm.
+    $replace = self::webp_replace_mode();
     $base_len = strlen(self::uploads_base());
-    $stat = ['total' => 0, 'bytes' => 0, 'webp' => 0, 'heavy' => 0, 'heavy_bytes' => 0];
-    $complete = self::each_upload_image(function ($path, $size) use (&$stat, $compressed, $webp_skip, $base_len) {
+    $stat = ['total' => 0, 'bytes' => 0, 'webp' => 0, 'left' => 0, 'left_bytes' => 0, 'heavy' => 0, 'heavy_bytes' => 0];
+    $complete = self::each_upload_image(function ($path, $size) use (&$stat, $compressed, $webp_skip, $hard, $base_len) {
       $rel = substr($path, $base_len);
       $stat['total']++;
       $stat['bytes'] += $size;
       if (is_file($path . '.webp') || isset($webp_skip[$rel])) {
         $stat['webp']++;
+      }
+      if (!isset($webp_skip[$rel]) && !isset($hard[$rel])) {
+        $stat['left']++;
+        $stat['left_bytes'] += $size;
       }
       if ($size > self::HEAVY_IMG && ($compressed[$rel] ?? 0) !== $size) {
         $stat['heavy']++;
@@ -861,22 +873,42 @@ final class WN_Optimize {
     }, microtime(true) + 20);
     $note = $complete ? '' : ' (thư viện quá lớn, mới quét một phần)';
 
-    $pct = $stat['total'] ? round($stat['webp'] * 100 / $stat['total']) : 100;
     $soft = self::server_software();
-    $out[] = self::check('img_webp', 'Ảnh có bản WebP', $pct >= 90 ? 'good' : ($pct >= 50 ? 'warn' : 'bad'),
-      $pct . '% (' . number_format_i18n($stat['webp']) . '/' . number_format_i18n($stat['total']) . ')',
-      'Tạo bản .webp đi kèm từng ảnh (giữ nguyên ảnh gốc, không đổi link trong bài). Trình duyệt hỗ trợ sẽ tự nhận WebP, nhẹ hơn 30-70%.' . $note,
-      ['fix' => $engine && $stat['webp'] < $stat['total'] ? 'img_webp' : '', 'metric' => ['key' => 'img_webp', 'label' => 'Ảnh có WebP', 'value' => $pct, 'unit' => '%', 'lower' => false],
-        'manual' => $soft['nginx'] ? 'Máy chủ Nginx không đọc .htaccess: gửi đoạn cấu hình bên dưới cho hosting để trả file .webp khi trình duyệt hỗ trợ.' : '',
-        'snippet' => $soft['nginx'] ? self::nginx_snippet() : '']);
+    if ($replace) {
+      $out[] = self::check('img_webp', 'Ảnh JPG/PNG chưa đổi sang WebP', $stat['left'] > 20 ? 'bad' : ($stat['left'] ? 'warn' : 'good'),
+        number_format_i18n($stat['left']) . ' ảnh · ' . size_format($stat['left_bytes'], 1),
+        'Đổi hẳn ảnh (cả các size) sang .webp, sửa link trong bài/trang/meta/tùy biến, rồi xóa ảnh gốc JPG/PNG. Ảnh tải lên sau này cũng tự xóa ảnh gốc. Ảnh có link viết cứng trong code được giữ nguyên.' . $note,
+        ['fix' => $engine && $stat['left'] ? 'img_webp' : '', 'metric' => ['key' => 'img_webp_left', 'label' => 'Ảnh chưa WebP', 'value' => $stat['left'], 'unit' => '', 'lower' => true]]);
+    } else {
+      $pct = $stat['total'] ? round($stat['webp'] * 100 / $stat['total']) : 100;
+      $out[] = self::check('img_webp', 'Ảnh có bản WebP', $pct >= 90 ? 'good' : ($pct >= 50 ? 'warn' : 'bad'),
+        $pct . '% (' . number_format_i18n($stat['webp']) . '/' . number_format_i18n($stat['total']) . ')',
+        'Tạo bản .webp đi kèm từng ảnh (giữ nguyên ảnh gốc, không đổi link trong bài). Trình duyệt hỗ trợ sẽ tự nhận WebP, nhẹ hơn 30-70%. Bật module Ảnh WebP để đổi hẳn sang WebP và xóa ảnh gốc.' . $note,
+        ['fix' => $engine && $stat['webp'] < $stat['total'] ? 'img_webp' : '', 'metric' => ['key' => 'img_webp', 'label' => 'Ảnh có WebP', 'value' => $pct, 'unit' => '%', 'lower' => false],
+          'manual' => $soft['nginx'] ? 'Máy chủ Nginx không đọc .htaccess: gửi đoạn cấu hình bên dưới cho hosting để trả file .webp khi trình duyệt hỗ trợ.' : '',
+          'snippet' => $soft['nginx'] ? self::nginx_snippet() : '']);
+    }
 
+    // Đổi hẳn sang WebP thì nén lại JPG trước đó là thừa (ảnh JPG sẽ bị xóa).
     $out[] = self::check('img_heavy', 'Ảnh nặng trên 300 KB', $stat['heavy'] > 20 ? 'warn' : 'good',
       number_format_i18n($stat['heavy']) . ' ảnh · ' . size_format($stat['heavy_bytes'], 1),
-      'Nén lại chất lượng 82, bỏ metadata, giữ nguyên kích thước. Ảnh gốc được sao lưu trước khi ghi đè.',
-      ['fix' => $engine && $stat['heavy'] ? 'img_compress' : '']);
+      $replace ? 'Không nén lại riêng: bước đổi sang WebP đã nén luôn.' : 'Nén lại chất lượng 82, bỏ metadata, giữ nguyên kích thước. Ảnh gốc được sao lưu trước khi ghi đè.',
+      ['fix' => $engine && $stat['heavy'] && !$replace ? 'img_compress' : '']);
+
+    if ($hard) {
+      $base = self::uploads_base();
+      $list = [];
+      foreach ($hard as $rel => $refs) {
+        $list[] = $rel . (is_file($base . $rel) ? '' : ' (không có file)') . '  <-  ' . implode(', ', array_slice(array_unique($refs), 0, 3)) . (count($refs) > 3 ? ', ...' : '');
+      }
+      $out[] = self::check('img_hardcoded', 'Ảnh có link viết cứng trong code', 'info', number_format_i18n(count($hard)) . ' ảnh',
+        'Link ảnh nằm thẳng trong file theme/mu-plugins nên không sửa được qua database: không đổi sang WebP, không xóa.',
+        ['manual' => 'Các ảnh dưới đây được giữ nguyên, không tối ưu. Muốn tối ưu thì sửa link trong file code (hoặc chuyển sang chọn ảnh qua Media/Tùy biến) rồi chạy lại.',
+          'snippet' => implode("\n", $list), 'snippet_label' => 'Chép danh sách']);
+    }
 
     $rule = self::webp_rule_present();
-    if ($stat['webp'] || $rule) {
+    if (!$replace && ($stat['webp'] || $rule)) {
       $out[] = self::check('webp_rule', 'Tự phục vụ WebP', $rule ? 'good' : 'warn', $rule ? 'Đã bật' : 'Chưa bật',
         $rule ? 'Rule trong uploads/.htaccess trả .webp cho trình duyệt hỗ trợ.' : 'Đã có file .webp nhưng máy chủ chưa trả về cho khách.',
         ['fix' => $rule || !$engine ? '' : 'img_webp']);

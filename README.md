@@ -203,7 +203,7 @@ Khi chuyển sang LiteSpeed Cache, các plugin cache khác (WP Fastest Cache, W3
 | **Tốc độ phản hồi** | Thời gian trang chủ phản hồi khi chưa cache và khi có cache (đo 2 lần, lấy lần nhanh hơn), số file JS/CSS/ảnh | |
 | **Bộ nhớ đệm** | Có cache trang không, cấu hình LiteSpeed Cache, plugin cache chồng nhau, nén gzip/brotli, thời hạn cache trình duyệt | ✔ |
 | **Database** | Dung lượng, autoload, bản ghi IP của WooCommerce, transient hết hạn, revision/nháp/bình luận rác, dữ liệu mồ côi, rác của plugin đã gỡ, Action Scheduler cũ | ✔ |
-| **Hình ảnh** | Thư viện xử lý ảnh, % ảnh có bản WebP, ảnh trên 300 KB, rule tự phục vụ WebP | ✔ |
+| **Hình ảnh** | Thư viện xử lý ảnh, ảnh JPG/PNG chưa đổi sang WebP (hoặc % ảnh có bản WebP khi tắt module Ảnh WebP), ảnh trên 300 KB, rule tự phục vụ WebP, ảnh có link viết cứng trong code | ✔ |
 | **Cron** | Tác vụ quá hạn, `wp-cron.php` có bị chặn không, `DISABLE_WP_CRON` | ✔ chạy bù |
 | **Bảo trì & an toàn** | Quyền `wp-config.php`, file `.zip/.sql/.bak` để lộ, `debug.log` lớn, chế độ debug, cập nhật đang chờ / bị chặn, tinh chỉnh nhẹ | ✔ |
 
@@ -225,8 +225,8 @@ Chạy theo đúng thứ tự dưới đây. Bước **Sao lưu database** tự 
 | Cấu hình LiteSpeed Cache | Cache trang 7 ngày, cache trình duyệt 1 năm, minify CSS/JS/HTML, defer JS (trừ jQuery), lazy-load ảnh/iframe (trừ logo), bỏ emoji, bỏ query string, heartbeat giãn ra. Tắt UCSS/CCSS, crawler, guest mode, tối ưu ảnh qua QUIC.cloud. **Nên xem lại menu/slider sau khi bật defer JS.** |
 | Cài và cấu hình cache trang | Apache: WP Fastest Cache. Nginx/khác: Cache Enabler. |
 | Bật nén + cache trình duyệt (.htaccess) | Apache: thêm block `WebNow Speed`. Sau khi thêm sẽ thử gọi trang chủ; máy chủ báo lỗi thì tự gỡ ra. |
-| Nén lại ảnh nặng | Ảnh JPG/PNG trên 300 KB: nén JPEG chất lượng 82 (progressive), PNG mức 9, bỏ metadata, **giữ nguyên kích thước**. Chỉ ghi đè khi nhẹ hơn ít nhất 10%. Ảnh CMYK bỏ qua. |
-| Tạo ảnh WebP và tự phục vụ | Tạo `ảnh.jpg.webp` cạnh mỗi ảnh (chất lượng 80), chỉ giữ khi nhỏ hơn bản gốc. **Không đổi link trong bài**: máy chủ tự trả `.webp` cho trình duyệt hỗ trợ (kèm `Vary: Accept`). Sau khi bật sẽ thử thật một ảnh để xác nhận. |
+| Nén lại ảnh nặng | Ảnh JPG/PNG trên 300 KB: nén JPEG chất lượng 82 (progressive), PNG mức 9, bỏ metadata, **giữ nguyên kích thước**. Chỉ ghi đè khi nhẹ hơn ít nhất 10%. Ảnh CMYK bỏ qua. Không chạy khi module Ảnh WebP bật (ảnh sẽ được đổi sang WebP). |
+| Chuyển ảnh sang WebP | **Module Ảnh WebP bật** (mặc định): đổi hẳn ảnh và mọi size sang `.webp`, sửa link trong bài/meta/options/bảng plugin (cả dạng JSON và tên file mã hóa `%E4...`), rồi **xóa ảnh gốc JPG/PNG** cùng bản sao lưu nén ở `originals/` không còn dùng. Bật luôn tùy chọn xóa ảnh gốc nên ảnh tải lên sau này cũng xóa bản JPG/PNG (sau 1 phút, qua cron). Ảnh có **link viết cứng trong code** (theme, theme cha, mu-plugins; cả dạng `uploads/...` lẫn `2025/08/a.jpg` ghép qua hàm riêng của theme) được giữ nguyên và liệt kê ở mục "Cần làm tay". **Module tắt**: tạo `ảnh.jpg.webp` cạnh mỗi ảnh (chất lượng 80), chỉ giữ khi nhỏ hơn bản gốc, không đổi link, máy chủ tự trả `.webp` cho trình duyệt hỗ trợ (kèm `Vary: Accept`). |
 | Chạy bù tác vụ nền | Chạy các sự kiện cron đã tới hạn, kèm dòng cron hệ thống gợi ý |
 | Bật tinh chỉnh nhẹ | Giới hạn 5 revision/bài, tắt heartbeat với khách chưa đăng nhập (admin: 60 giây), bỏ script emoji. Chạy thường trực khi module bật. |
 | Khóa quyền wp-config.php | Đặt 640, **chỉ khi PHP chạy bằng đúng user sở hữu file** (không thì có thể làm web không đọc được cấu hình). Không áp dụng trên Windows. |
@@ -308,9 +308,9 @@ Vẽ nét logo SVG khi trang đang tải rồi mờ dần (tối thiểu 3,5 gi�
 Nhúng Font Awesome 6 giống hệt plugin chính thức (cùng URL, handle, integrity hash), tải không chặn hiển thị. Tắt nếu theme/plugin khác đã nạp Font Awesome.
 
 ### Ảnh WebP
-Ảnh JPG/PNG tải lên tự đổi sang WebP. Công cụ **Media → WebP Batch Optimizer** chuyển hàng loạt ảnh cũ (cả bản gốc lẫn mọi kích thước): cập nhật database và metadata trước, rồi mới xóa ảnh gốc nếu bật tùy chọn đó (mặc định **giữ** ảnh gốc). Chất lượng chỉnh được 60–92 (mặc định 82). Có URL chạy bằng cron với khóa bí mật: `?webnow_webp_cron=<khóa>&n=5`.
+Ảnh JPG/PNG tải lên tự đổi sang WebP (tên trùng file `.webp` có sẵn thì tự đổi tên). Bật tùy chọn xóa ảnh gốc thì bản JPG/PNG của ảnh vừa tải lên bị xóa sau 1 phút, sau khi đã thay link trong database. Công cụ **Media → WebP Batch Optimizer** chuyển hàng loạt ảnh cũ (cả bản gốc lẫn mọi kích thước): cập nhật database và metadata trước, rồi mới xóa ảnh gốc nếu bật tùy chọn đó (mặc định **giữ** ảnh gốc, Tối ưu web bật lên khi chạy bước chuyển WebP). Không bao giờ xóa ảnh có link viết cứng trong code, không đụng `wn-optimize/`, `wn-quarantine/`, `woocommerce_uploads/`. Chất lượng chỉnh được 60–92 (mặc định 82). Có URL chạy bằng cron với khóa bí mật: `?webnow_webp_cron=<khóa>&n=5`.
 
-Module này **đổi hẳn file sang `.webp`**. Tối ưu web thì tạo bản `.webp` **đi kèm** và giữ nguyên file gốc. Chọn một trong hai cách cho mỗi site. Nếu đã có plugin khác chuyển WebP khi upload (vd. Foxtool) thì tắt module này.
+Module này **đổi hẳn file sang `.webp`**; khi bật, bước WebP của Tối ưu web cũng dùng cách này. Tắt module thì Tối ưu web tạo bản `.webp` **đi kèm** và giữ nguyên file gốc. Nếu đã có plugin khác chuyển WebP khi upload (vd. Foxtool) thì tắt module này.
 
 ### Dọn ảnh không dùng
 Ba bước an toàn:
@@ -425,6 +425,8 @@ Thêm một mục kiểm tra/bước sửa cho Tối ưu web:
 - Sửa lỗi: Font Awesome bị trình duyệt chặn ("Failed to find a valid digest in the 'integrity' attribute") sau khi Tối ưu web bật CSS Minify của LiteSpeed. Thẻ CSS Font Awesome giờ có `data-no-optimize` để LiteSpeed không thay bằng bản minify.
 - Sửa lỗi Ảnh WebP: tải `anh.jpg` khi đã có `anh.webp` (từ `anh.png` trước đó, hoặc ảnh gốc đã bị xóa) thì ảnh mới dùng nhầm file WebP cũ. Giờ tên file được đổi (`anh-1.jpg` → `anh-1.webp`) để không trùng.
 - "Nhắc plugin cần thiết" mặc định **tắt** (site đã lưu bật/tắt thì giữ nguyên).
+- Tối ưu web: khi module Ảnh WebP bật, bước WebP đổi hẳn ảnh sang `.webp`, sửa link và **xóa ảnh gốc** (trước đây chỉ tạo `.jpg.webp` đi kèm). Ảnh có link viết cứng trong code theme không bị đụng, được liệt kê ở "Cần làm tay".
+- Ảnh WebP: không còn quét/xóa ảnh trong `wn-optimize/` (bản sao lưu) và `woocommerce_uploads/`; thay cả link dạng mã hóa cho tên file có dấu/chữ Trung.
 
 ### 1.5
 - **Thêm Tối ưu web**: trình hướng dẫn Phân tích → Kế hoạch → Áp dụng → Kết quả, tự chọn cách tối ưu theo LiteSpeed/Apache/Nginx, sao lưu trước khi dọn. Module mặc định **bật** (chỉ hiện trong admin; chỉ thay đổi site khi bấm Áp dụng).

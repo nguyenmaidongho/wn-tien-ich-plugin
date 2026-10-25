@@ -306,7 +306,7 @@
       return '<div class="o-manual"><strong>' + esc(c.title) + ' · ' + esc(c.value) + '</strong>' +
         (c.manual ? '<p>' + esc(c.manual) + '</p>' : '') +
         (c.command ? '<div class="o-cmd"><code>' + esc(c.command) + '</code><button type="button" data-copy="' + esc(c.command) + '">Chép</button></div>' : '') +
-        (snippet ? '<div class="o-snippet"><button type="button" data-copy="' + esc(snippet) + '">Chép cấu hình</button><pre>' + esc(snippet) + '</pre></div>' : '') +
+        (snippet ? '<div class="o-snippet"><button type="button" data-copy="' + esc(snippet) + '">' + esc(c.snippet_label || 'Chép cấu hình') + '</button><pre>' + esc(snippet) + '</pre></div>' : '') +
         '</div>';
     }).join('');
 

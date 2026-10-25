@@ -18,7 +18,11 @@ final class WebNow_WebP_Batch {
   const OPT_DELETE_ORIGINALS = 'webnow_webp_delete_originals';
   const BATCH = 5;
 
+  /** Bản đang chạy, để Tối ưu web gọi lại mà không đăng ký hook lần hai. */
+  public static $instance = null;
+
   public function __construct() {
+    self::$instance = $this;
     add_action('admin_menu', [$this, 'menu']);
     add_action('admin_enqueue_scripts', [$this, 'assets']);
     add_action('wp_ajax_webnow_webp_stats', [$this, 'ajax_stats']);
@@ -29,6 +33,7 @@ final class WebNow_WebP_Batch {
     add_action('init', [$this, 'maybe_cron_run'], 5);
     add_filter('wp_generate_attachment_metadata', [$this, 'on_metadata'], 99, 2);
     add_filter('wp_unique_filename', [$this, 'unique_webp_name'], 10, 3);
+    add_action('wn_webp_delete_originals', [$this, 'delete_attachment_originals']);
   }
 
   private function quality(): int {
@@ -36,7 +41,7 @@ final class WebNow_WebP_Batch {
     return max(60, min(92, $q ?: 82));
   }
 
-  private function delete_originals(): bool {
+  public function delete_originals(): bool {
     // Mặc định GIỮ ảnh gốc; chỉ xóa khi bật rõ ràng trong cài đặt.
     return (string) get_option(self::OPT_DELETE_ORIGINALS, '0') === '1';
   }
@@ -216,11 +221,15 @@ final class WebNow_WebP_Batch {
         continue;
       }
       $path = wp_normalize_path($file->getPathname());
-      // Ảnh đang cách ly bởi module Dọn ảnh: không đụng vào.
-      if (strpos($path, '/wn-quarantine/') !== false) {
+      // Ảnh cách ly (Dọn ảnh), bản sao lưu của Tối ưu web, file tải về của WooCommerce: không đụng vào.
+      if (preg_match('#/(wn-quarantine|wn-optimize|wc-logs|woocommerce_uploads|cache)/#', '/' . substr($path, strlen($basedir)))) {
         continue;
       }
       if (!preg_match('/\.(jpe?g|png)$/i', $path)) {
+        continue;
+      }
+      // Link viết cứng trong code theme: đổi/xóa là gãy ảnh, để Tối ưu web liệt kê cho sửa tay.
+      if (wn_is_hardcoded_upload($path)) {
         continue;
       }
       $webp = preg_replace('/\.(jpe?g|png)$/i', '.webp', $path);
@@ -741,7 +750,7 @@ final class WebNow_WebP_Batch {
     // 2) Delete originals ONLY after DB updated AND target webp exists
     if ($this->delete_originals()) {
       foreach (array_unique($pending_delete) as $del) {
-        if (!$del || !is_file($del)) {
+        if (!$del || !is_file($del) || wn_is_hardcoded_upload($del)) {
           continue;
         }
         // Never delete the webp target itself.
@@ -878,7 +887,7 @@ final class WebNow_WebP_Batch {
     }
 
     // 2) Then delete originals
-    if ($this->delete_originals()) {
+    if ($this->delete_originals() && !wn_is_hardcoded_upload($path)) {
       if (is_file($path) && preg_match('/\.(jpe?g|png)$/i', $path)) {
         @unlink($path);
       }
@@ -972,6 +981,7 @@ final class WebNow_WebP_Batch {
       return $metadata;
     }
     $dir = trailingslashit(dirname($file));
+    $converted = [];
 
     if (preg_match('/\.(jpe?g|png)$/i', $file)) {
       $new_full = $this->materialize_webp($file);
@@ -979,6 +989,7 @@ final class WebNow_WebP_Batch {
         $metadata['file'] = $this->relative_upload_path($new_full);
         update_attached_file($attachment_id, $new_full);
         wp_update_post(['ID' => $attachment_id, 'post_mime_type' => 'image/webp']);
+        $converted[] = $file;
         $dir = trailingslashit(dirname($new_full));
       }
     }
@@ -992,10 +1003,34 @@ final class WebNow_WebP_Batch {
         if (is_string($new_size)) {
           $metadata['sizes'][$name]['file'] = wp_basename($new_size);
           $metadata['sizes'][$name]['mime-type'] = 'image/webp';
+          $converted[] = $dir . $size['file'];
         }
       }
     }
+
+    // Xóa ảnh gốc sau 1 phút qua cron, không làm ngay: hook này cũng chạy khi tạo lại thumbnail cho ảnh cũ
+    // đang có link trong bài, nên phải thay link trong DB trước (replace_file_with_webp) rồi mới xóa.
+    if ($converted && $this->delete_originals()) {
+      update_post_meta($attachment_id, '_wn_webp_originals', array_map([$this, 'relative_upload_path'], $converted));
+      if (!wp_next_scheduled('wn_webp_delete_originals', [$attachment_id])) {
+        wp_schedule_single_event(time() + MINUTE_IN_SECONDS, 'wn_webp_delete_originals', [$attachment_id]);
+      }
+    }
     return $metadata;
+  }
+
+  public function delete_attachment_originals($attachment_id) {
+    $rels = get_post_meta($attachment_id, '_wn_webp_originals', true);
+    delete_post_meta($attachment_id, '_wn_webp_originals');
+    if (!is_array($rels) || !$this->delete_originals()) {
+      return;
+    }
+    $base = trailingslashit(wp_get_upload_dir()['basedir']);
+    foreach ($rels as $rel) {
+      if (is_file($base . $rel)) {
+        $this->replace_file_with_webp($base . $rel, true);
+      }
+    }
   }
 
   private function replace_url_fragment($old, $new) {
@@ -1004,6 +1039,13 @@ final class WebNow_WebP_Batch {
     $new = (string) $new;
     if ($old === '' || $old === $new) {
       return;
+    }
+    // Tên file có dấu/chữ Trung: trong bài có thể lưu dạng mã hóa %E4%B8%BB...
+    if (preg_match('/[^\x20-\x7e]/', $old)) {
+      $enc = function ($s) {
+        return implode('/', array_map('rawurlencode', explode('/', $s)));
+      };
+      $this->replace_url_fragment($enc($old), $enc($new));
     }
 
     $wpdb->query($wpdb->prepare(

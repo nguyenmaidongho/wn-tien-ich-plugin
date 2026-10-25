@@ -25,7 +25,7 @@ final class WN_Optimize_Fixes {
       'page_cache_install' => 'Cài và cấu hình cache trang',
       'server_rules' => 'Bật nén gzip/brotli + cache trình duyệt (.htaccess)',
       'img_compress' => 'Nén lại ảnh nặng',
-      'img_webp' => 'Tạo ảnh WebP và tự phục vụ',
+      'img_webp' => 'Chuyển ảnh sang WebP',
       'cron_run' => 'Chạy bù tác vụ nền quá hạn',
       'tweaks' => 'Bật tinh chỉnh nhẹ',
       'wpconfig_perms' => 'Khóa quyền wp-config.php',
@@ -631,6 +631,9 @@ final class WN_Optimize_Fixes {
     if (!$engine) {
       return ['warn' => true, 'log' => ['Máy chủ không có Imagick/GD hỗ trợ WebP, bỏ qua.']];
     }
+    if (WN_Optimize::webp_replace_mode()) {
+      return self::webp_replace(WebNow_WebP_Batch::$instance, $s, $deadline);
+    }
     $skip = self::done_list('webp-skip');
     if (empty($s['queue'])) {
       $s = ['queue' => self::image_queue('webp', function ($path) use ($skip) {
@@ -669,6 +672,83 @@ final class WN_Optimize_Fixes {
     }
     return ['done' => $done, 'progress' => (int) floor($s['i'] * 100 / max(1, count($q))), 'state' => $s, 'log' => $log, 'warn' => $warn,
       'note' => sprintf('%s/%s ảnh', self::n($s['i']), self::n(count($q)))];
+  }
+
+  /**
+   * Đổi hẳn sang WebP bằng module Ảnh WebP: tạo .webp (cả các size) → sửa link trong DB → xóa JPG/PNG.
+   * Ảnh có link viết cứng trong code được module bỏ qua (wn_is_hardcoded_upload).
+   */
+  private static function webp_replace($webp, $s, $deadline) {
+    $skip = self::done_list('webp-skip');
+    if (empty($s['queue'])) {
+      // Đã chọn đổi hẳn sang WebP thì bật luôn xóa ảnh gốc, ảnh tải lên sau này cũng vậy.
+      update_option(WebNow_WebP_Batch::OPT_DELETE_ORIGINALS, '1', false);
+      $file = self::work_dir() . 'queue-webp-replace.json';
+      file_put_contents($file, wp_json_encode($webp->collect_stats(true)['queue']));
+      $s = ['queue' => $file, 'i' => 0, 'ok' => 0, 'fail' => 0];
+    }
+    $q = self::load_queue($s['queue']);
+    while ($s['i'] < count($q) && microtime(true) < $deadline) {
+      $item = $q[$s['i']++];
+      if (($item['type'] ?? '') === 'attachment') {
+        $r = $webp->convert_attachment((int) $item['id']);
+      } else {
+        $path = wp_normalize_path((string) ($item['path'] ?? ''));
+        $rel = self::rel($path);
+        if (isset($skip[$rel]) || !is_file($path)) {
+          continue;
+        }
+        $r = $webp->replace_file_with_webp($path, true);
+        if ($r === false) {
+          $skip[$rel] = 1;
+        }
+      }
+      if ($r === false) {
+        $s['fail']++;
+      } elseif ($r) {
+        $s['ok']++;
+      }
+    }
+    self::save_list('webp-skip', $skip);
+    $done = $s['i'] >= count($q);
+    $log = [];
+    if ($done) {
+      @unlink($s['queue']);
+      $fixed = $webp->repair_broken_raster_links();
+      $dropped = self::drop_replaced_backups();
+      $log[] = sprintf('Đổi %s ảnh sang WebP, sửa link và xóa ảnh gốc JPG/PNG.', self::n($s['ok'])) . ($s['fail'] ? sprintf(' %s ảnh không đổi được, giữ nguyên.', self::n($s['fail'])) : '');
+      if ($fixed) {
+        $log[] = sprintf('Sửa thêm %s link ảnh cũ trỏ tới file đã xóa.', self::n($fixed));
+      }
+      if ($dropped) {
+        $log[] = sprintf('Xóa %s bản sao lưu ảnh gốc không còn dùng (uploads/%s/originals/).', self::n($dropped), WN_Optimize::DIR);
+      }
+      $hard = count(wn_hardcoded_upload_images());
+      if ($hard) {
+        $log[] = sprintf('Giữ nguyên %s ảnh có link viết cứng trong code, xem danh sách ở mục "Cần làm tay".', self::n($hard));
+      }
+    }
+    return ['done' => $done, 'progress' => (int) floor($s['i'] * 100 / max(1, count($q))), 'state' => $s, 'log' => $log, 'warn' => $done && $s['fail'] > 0,
+      'note' => sprintf('%s/%s ảnh', self::n($s['i']), self::n(count($q)))];
+  }
+
+  /** Bản sao lưu của bước nén ảnh mà ảnh gốc đã được đổi sang WebP và xóa thì bỏ luôn. */
+  private static function drop_replaced_backups() {
+    $dir = self::work_dir('originals');
+    $base = WN_Optimize::uploads_base();
+    $n = 0;
+    $it = new RecursiveIteratorIterator(new RecursiveDirectoryIterator($dir, FilesystemIterator::SKIP_DOTS));
+    foreach ($it as $f) {
+      if (!$f->isFile() || !preg_match('/\.(jpe?g|png)$/i', $f->getFilename())) {
+        continue;
+      }
+      $rel = substr(wp_normalize_path($f->getPathname()), strlen($dir));
+      $webp = preg_replace('/\.(jpe?g|png)$/i', '.webp', $base . $rel);
+      if (!is_file($base . $rel) && is_file($webp) && @unlink($f->getPathname())) {
+        $n++;
+      }
+    }
+    return $n;
   }
 
   /** Rule trả image.jpg.webp thay cho image.jpg khi trình duyệt hỗ trợ (Apache/LiteSpeed). */
