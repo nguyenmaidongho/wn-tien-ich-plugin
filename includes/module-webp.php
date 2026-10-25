@@ -28,6 +28,7 @@ final class WebNow_WebP_Batch {
     add_action('wp_ajax_webnow_webp_repair_links', [$this, 'ajax_repair_links']);
     add_action('init', [$this, 'maybe_cron_run'], 5);
     add_filter('wp_generate_attachment_metadata', [$this, 'on_metadata'], 99, 2);
+    add_filter('wp_unique_filename', [$this, 'unique_webp_name'], 10, 3);
   }
 
   private function quality(): int {
@@ -930,6 +931,39 @@ final class WebNow_WebP_Batch {
       return false;
     }
     return true;
+  }
+
+  /**
+   * WP chỉ tránh trùng tên theo đuôi gốc: đã có "anh.webp" (từ "anh.png" trước đó, hoặc "anh.jpg"
+   * đã xóa ảnh gốc) mà tải "anh.jpg" thì vẫn giữ tên đó, materialize_webp() dùng lại file WebP cũ
+   * → ảnh mới hiện thành ảnh cũ. Đổi tên tới khi không đụng file .webp nào (kể cả các size).
+   */
+  public function unique_webp_name($filename, $ext, $dir) {
+    $e = pathinfo($filename, PATHINFO_EXTENSION);
+    if (!preg_match('/^(jpe?g|png)$/i', $e)) {
+      return $filename;
+    }
+    $dir = trailingslashit($dir);
+    $name = pathinfo($filename, PATHINFO_FILENAME);
+    $taken = function ($n) use ($dir, $e) {
+      if (file_exists($dir . $n . '.' . $e) || file_exists($dir . $n . '.webp')) {
+        return true;
+      }
+      foreach (glob($dir . $n . '-*.webp', GLOB_NOSORT) ?: [] as $f) {
+        if (preg_match('/^' . preg_quote($n, '/') . '-\d+x\d+\.webp$/', wp_basename($f))) {
+          return true;
+        }
+      }
+      return false;
+    };
+    if (!$taken($name)) {
+      return $filename;
+    }
+    $i = 1;
+    while ($taken($name . '-' . $i)) {
+      $i++;
+    }
+    return $name . '-' . $i . '.' . $e;
   }
 
   public function on_metadata($metadata, $attachment_id) {

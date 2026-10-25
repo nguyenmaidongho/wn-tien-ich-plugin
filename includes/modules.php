@@ -81,7 +81,7 @@ function wn_modules() {
       'title' => 'Nhắc plugin cần thiết',
       'desc' => 'Cảnh báo trong admin nếu Rank Math hoặc plugin cache (WP Fastest Cache / LiteSpeed Cache) bị tắt.',
       'icon' => 'dashicons-warning',
-      'default' => '1',
+      'default' => '0',
     ],
     'hide_core_updates' => [
       'title' => 'Ẩn thông báo cập nhật',

@@ -160,7 +160,7 @@ Bật/tắt từng tính năng ở **WebNow → Tính năng**. Thay đổi lưu 
 | 9 | Trang đăng nhập WebNow | Bật | | |
 | 10 | Ẩn logo WordPress | Bật | | |
 | 11 | Ẩn thông báo Flatsome | Bật | | |
-| 12 | Nhắc plugin cần thiết | Bật | | |
+| 12 | Nhắc plugin cần thiết | Tắt | | |
 | 13 | Ẩn thông báo cập nhật | Tắt | | không khuyến khích |
 | 14 | Classic Editor | Tắt | Classic Editor | |
 
@@ -342,7 +342,7 @@ Module có `default = 1` sẽ tự bật ngay khi kích hoạt plugin, kể cả
 cd ~/public_html
 # 1 = bật, 0 = tắt
 for kv in optimize:1 search:0 contact:0 fontawesome:0 webp:0 tet:0 preload:0 media_cleanup:0 \
-          login_branding:1 hide_wp_logo:1 hide_flatsome_notice:1 plugin_warning:1 hide_core_updates:0 classic_editor:0; do
+          login_branding:1 hide_wp_logo:1 hide_flatsome_notice:1 plugin_warning:0 hide_core_updates:0 classic_editor:0; do
   wp option update "wn_module_${kv%%:*}" "${kv##*:}"
 done
 ```
@@ -422,6 +422,9 @@ Thêm một mục kiểm tra/bước sửa cho Tối ưu web:
 - **Tự cập nhật từ GitHub**: push lên `main` là site thấy bản mới. Chỉ báo bằng một nút nhỏ cạnh số phiên bản trong trang WebNow. Kiểm tra cú pháp trước khi cài, gọi thử code mới và tự trả bản cũ nếu lỗi, có nút Khôi phục bản trước. Hằng `WN_UPDATE_BRANCH` để site staging theo nhánh khác.
 - Repo đổi tên thành `wn-tien-ich-plugin`.
 - Từ 1.5 trở về trước phải cập nhật tay một lần lên 1.6.
+- Sửa lỗi: Font Awesome bị trình duyệt chặn ("Failed to find a valid digest in the 'integrity' attribute") sau khi Tối ưu web bật CSS Minify của LiteSpeed. Thẻ CSS Font Awesome giờ có `data-no-optimize` để LiteSpeed không thay bằng bản minify.
+- Sửa lỗi Ảnh WebP: tải `anh.jpg` khi đã có `anh.webp` (từ `anh.png` trước đó, hoặc ảnh gốc đã bị xóa) thì ảnh mới dùng nhầm file WebP cũ. Giờ tên file được đổi (`anh-1.jpg` → `anh-1.webp`) để không trùng.
+- "Nhắc plugin cần thiết" mặc định **tắt** (site đã lưu bật/tắt thì giữ nguyên).
 
 ### 1.5
 - **Thêm Tối ưu web**: trình hướng dẫn Phân tích → Kế hoạch → Áp dụng → Kết quả, tự chọn cách tối ưu theo LiteSpeed/Apache/Nginx, sao lưu trước khi dọn. Module mặc định **bật** (chỉ hiện trong admin; chỉ thay đổi site khi bấm Áp dụng).

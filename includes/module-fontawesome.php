@@ -22,6 +22,8 @@ add_filter('style_loader_tag', function ($tag, $handle) {
     return $tag;
   }
   // Tải không chặn render: media="print" rồi đổi thành "all" khi tải xong.
-  $tag = str_replace(" media='all'", " media='print' onload=\"this.media='all'\" integrity=\"{$meta[$handle]}\" crossorigin=\"anonymous\"", $tag);
+  // data-no-optimize: LiteSpeed (bật CSS Minify) bỏ qua thẻ này. Nếu không, nó thay href bằng
+  // bản minify trên host nhưng giữ integrity của file CDN → sai hash, trình duyệt chặn CSS.
+  $tag = str_replace(" media='all'", " media='print' onload=\"this.media='all'\" integrity=\"{$meta[$handle]}\" crossorigin=\"anonymous\" data-no-optimize=\"1\"", $tag);
   return $tag;
 }, 10, 2);
