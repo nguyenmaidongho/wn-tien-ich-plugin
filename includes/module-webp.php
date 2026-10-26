@@ -140,6 +140,11 @@ final class WebNow_WebP_Batch {
     if (!$dir && !empty($meta['file'])) {
       $dir = trailingslashit(dirname(path_join(wp_get_upload_dir()['basedir'], $meta['file'])));
     }
+    // Ảnh gốc trước khi WP thu nhỏ thành -scaled: trước đây bị quét lại như file lẻ.
+    if ($dir && !empty($meta['original_image']) && preg_match('/\.(jpe?g|png)$/i', $meta['original_image'])
+      && is_file($dir . wp_basename($meta['original_image']))) {
+      return true;
+    }
     if (!empty($meta['sizes']) && is_array($meta['sizes'])) {
       foreach ($meta['sizes'] as $size) {
         if (empty($size['file'])) {
@@ -178,6 +183,8 @@ final class WebNow_WebP_Batch {
       'no_found_rows' => true,
     ]);
 
+    // Nạp meta một lần, không thì mỗi attachment tốn 2 truy vấn.
+    update_meta_cache('post', $all);
     $pending_ids = [];
     foreach ($all as $id) {
       if ($this->attachment_needs_convert((int) $id)) {
@@ -207,12 +214,63 @@ final class WebNow_WebP_Batch {
     return $out;
   }
 
+  /**
+   * Mọi file (đường dẫn tương đối trong uploads) đang thuộc 1 attachment: file chính, ảnh gốc trước khi
+   * scale, các size, bản sửa. Đọc theo từng đợt để site nhiều ảnh không tốn RAM.
+   * @return array<string,int>
+   */
+  private function attachment_file_set() {
+    global $wpdb;
+    $set = [];
+    $last = 0;
+    do {
+      $rows = $wpdb->get_results($wpdb->prepare(
+        "SELECT f.post_id, f.meta_value AS file, m.meta_value AS meta, b.meta_value AS backup
+         FROM {$wpdb->postmeta} f
+         LEFT JOIN {$wpdb->postmeta} m ON m.post_id = f.post_id AND m.meta_key = '_wp_attachment_metadata'
+         LEFT JOIN {$wpdb->postmeta} b ON b.post_id = f.post_id AND b.meta_key = '_wp_attachment_backup_sizes'
+         WHERE f.meta_key = '_wp_attached_file' AND f.post_id > %d
+         ORDER BY f.post_id LIMIT 1000",
+        $last
+      ));
+      foreach ($rows as $r) {
+        $last = (int) $r->post_id;
+        $file = ltrim(str_replace('\\', '/', (string) $r->file), '/');
+        if ($file === '') {
+          continue;
+        }
+        $set[$file] = 1;
+        $prefix = dirname($file) === '.' ? '' : dirname($file) . '/';
+        $names = [];
+        $meta = maybe_unserialize($r->meta);
+        if (is_array($meta)) {
+          $names[] = $meta['original_image'] ?? '';
+          foreach ((array) ($meta['sizes'] ?? []) as $s) {
+            $names[] = is_array($s) ? ($s['file'] ?? '') : '';
+          }
+        }
+        $backup = maybe_unserialize($r->backup);
+        foreach (is_array($backup) ? $backup : [] as $s) {
+          $names[] = is_array($s) ? ($s['file'] ?? '') : '';
+        }
+        foreach ($names as $n) {
+          if (is_string($n) && $n !== '') {
+            $set[$prefix . wp_basename($n)] = 1;
+          }
+        }
+      }
+    } while (count($rows) === 1000);
+    return $set;
+  }
+
+  /** File JPG/PNG trong uploads KHÔNG thuộc attachment nào (file thuộc attachment đã nằm trong hàng đợi attachment). */
   private function find_orphan_raster_files() {
     $basedir = trailingslashit(wp_get_upload_dir()['basedir']);
     $files = [];
     if (!is_dir($basedir)) {
       return $files;
     }
+    $owned = $this->attachment_file_set();
     $it = new RecursiveIteratorIterator(
       new RecursiveDirectoryIterator($basedir, FilesystemIterator::SKIP_DOTS)
     );
@@ -232,12 +290,14 @@ final class WebNow_WebP_Batch {
       if (wn_is_hardcoded_upload($path)) {
         continue;
       }
+      if (isset($owned[substr($path, strlen(wp_normalize_path($basedir)))])) {
+        continue;
+      }
+      // Giữ ảnh gốc mà đã có bản WebP thì không cần làm lại (bỏ qua không làm hỏng gì).
+      // Bật xóa ảnh gốc thì vẫn đưa vào hàng đợi: replace_file_with_webp() chỉ dùng lại .webp có sẵn
+      // khi chắc là của file này, rồi mới sửa link và xóa.
       $webp = preg_replace('/\.(jpe?g|png)$/i', '.webp', $path);
-      if (is_file($webp) && filesize($webp) > 0) {
-        // Already have webp — still queue for delete-originals cleanup.
-        if ($this->delete_originals()) {
-          $files[] = $path;
-        }
+      if (!$this->delete_originals() && ($this->fresh_sidecar($path) || (is_file($webp) && filesize($webp) > 0))) {
         continue;
       }
       $files[] = $path;
@@ -562,13 +622,15 @@ final class WebNow_WebP_Batch {
       }
     }
 
+    // collect_stats() duyệt cả thư mục uploads và mọi attachment: gọi sau mỗi lượt 5 ảnh thì site ~1.300 ảnh
+    // chạy hàng giờ. Giữa chừng chỉ trả số còn lại, thống kê đầy đủ khi xong.
     return [
       'done' => empty($queue),
       'left' => count($queue),
       'ok' => $ok,
       'fail' => $fail,
       'skipped' => $skipped,
-      'stats' => $this->collect_stats(false),
+      'stats' => empty($queue) ? $this->collect_stats(false) : ['pending' => count($queue)],
     ];
   }
 
@@ -589,19 +651,17 @@ final class WebNow_WebP_Batch {
       $meta = [];
     }
 
-    $dir = '';
-    if ($file) {
-      $dir = trailingslashit(dirname($file));
-    } elseif (!empty($meta['file'])) {
-      $dir = trailingslashit(dirname(path_join(wp_get_upload_dir()['basedir'], $meta['file'])));
+    if (!$file && !empty($meta['file'])) {
       $file = path_join(wp_get_upload_dir()['basedir'], $meta['file']);
     }
-    if ($dir === '') {
+    if (!$file) {
       return false;
     }
+    $file = wp_normalize_path($file);
+    $dir = trailingslashit(dirname($file));
 
     $replacements = [];
-    $pending_delete = []; // delete ONLY after DB write
+    $pending_delete = []; // ảnh gốc => file .webp thay nó; chỉ xóa SAU khi ghi DB
     // Khóa thay URL theo đường dẫn tương đối (2023/12/a.jpg) để không đụng file trùng tên ở thư mục khác
     // hay tên là chuỗi con của tên khác (24.jpg ⊂ x-1536x1024.jpg).
     $rel = function ($abs) {
@@ -609,12 +669,40 @@ final class WebNow_WebP_Batch {
     };
     $changed = false;
 
-    // --- Full size ---
-    if ($file && is_file($file) && preg_match('/\.(jpe?g|png)$/i', $file)) {
-      $new_full = $this->materialize_webp($file);
-      if ($new_full === false) {
-        return false;
+    // File chính đã là .webp mà metadata còn ghi .jpg: chỉ sửa metadata.
+    if (preg_match('/\.webp$/i', $file) && !empty($meta['file']) && preg_match('/\.(jpe?g|png)$/i', $meta['file'])) {
+      $old_abs = wp_normalize_path(path_join(wp_get_upload_dir()['basedir'], $meta['file']));
+      $replacements[$meta['file']] = $rel($file);
+      $meta['file'] = $this->relative_upload_path($file);
+      $pending_delete[$old_abs] = $file;
+      $changed = true;
+    }
+
+    // Gom mọi file JPG/PNG của attachment rồi chọn tên .webp một lượt, để các size dùng chung một hậu tố.
+    $sources = [];
+    if (preg_match('/\.(jpe?g|png)$/i', $file)) {
+      $sources[] = $file;
+    }
+    if (!empty($meta['original_image']) && preg_match('/\.(jpe?g|png)$/i', $meta['original_image'])) {
+      $sources[] = $dir . wp_basename($meta['original_image']);
+    }
+    foreach ((array) ($meta['sizes'] ?? []) as $size) {
+      if (!empty($size['file']) && preg_match('/\.(jpe?g|png)$/i', $size['file'])) {
+        $sources[] = $dir . wp_basename($size['file']);
       }
+    }
+    $plan = $this->plan_webp_targets($sources, $attachment_id);
+    $made = [];
+    $make = function ($src) use ($plan, &$made) {
+      if (!isset($made[$src])) {
+        $made[$src] = isset($plan[$src]) ? $this->materialize_webp($src, $plan[$src]) : false;
+      }
+      return $made[$src];
+    };
+
+    // --- Full size ---
+    if (preg_match('/\.(jpe?g|png)$/i', $file)) {
+      $new_full = $make($file);
       if (is_string($new_full)) {
         $replacements[$rel($file)] = $rel($new_full);
         $meta['file'] = $this->relative_upload_path($new_full);
@@ -624,39 +712,22 @@ final class WebNow_WebP_Batch {
           $meta['height'] = $info[1];
         }
         update_attached_file($attachment_id, $new_full);
-        $pending_delete[] = $file;
-        $pending_delete[] = $file . '.webp';
+        $pending_delete[$file] = $new_full;
         $file = $new_full;
-        $dir = trailingslashit(dirname($file));
         $changed = true;
+      } elseif (is_file($file)) {
+        return false;
       }
-    } elseif ($file && preg_match('/\.webp$/i', $file)) {
-      if (!empty($meta['file']) && preg_match('/\.(jpe?g|png)$/i', $meta['file'])) {
-        $old_meta_file = $meta['file'];
-        $old_abs = path_join(wp_get_upload_dir()['basedir'], $old_meta_file);
-        $meta['file'] = $this->relative_upload_path($file);
-        $replacements[$old_meta_file] = $rel($file);
-        $pending_delete[] = $old_abs;
-        $pending_delete[] = $old_abs . '.webp';
-        $changed = true;
-      }
-    } elseif (!empty($meta['file']) && preg_match('/\.(jpe?g|png)$/i', $meta['file'])) {
-      $guess = path_join(wp_get_upload_dir()['basedir'], $meta['file']);
-      $new_full = $this->materialize_webp($guess);
-      if (is_string($new_full)) {
-        $replacements[$meta['file']] = $rel($new_full);
-        $meta['file'] = $this->relative_upload_path($new_full);
-        update_attached_file($attachment_id, $new_full);
-        $pending_delete[] = $guess;
-        $pending_delete[] = $guess . '.webp';
-        $file = $new_full;
-        $dir = trailingslashit(dirname($file));
-        $changed = true;
-      } elseif ($file && preg_match('/\.webp$/i', $file) && is_file($file)) {
-        $replacements[$meta['file']] = $rel($file);
-        $meta['file'] = $this->relative_upload_path($file);
-        $pending_delete[] = $guess;
-        $pending_delete[] = $guess . '.webp';
+    }
+
+    // --- Ảnh gốc trước khi WP thu nhỏ thành -scaled ---
+    if (!empty($meta['original_image']) && preg_match('/\.(jpe?g|png)$/i', $meta['original_image'])) {
+      $orig = $dir . wp_basename($meta['original_image']);
+      $new_orig = $make($orig);
+      if (is_string($new_orig)) {
+        $replacements[$rel($orig)] = $rel($new_orig);
+        $meta['original_image'] = wp_basename($new_orig);
+        $pending_delete[$orig] = $new_orig;
         $changed = true;
       }
     }
@@ -667,8 +738,6 @@ final class WebNow_WebP_Batch {
         if (empty($size['file'])) {
           continue;
         }
-        $size_path = $dir . $size['file'];
-
         if (preg_match('/\.webp$/i', $size['file'])) {
           if (empty($size['mime-type']) || $size['mime-type'] !== 'image/webp') {
             $meta['sizes'][$size_name]['mime-type'] = 'image/webp';
@@ -676,38 +745,24 @@ final class WebNow_WebP_Batch {
           }
           continue;
         }
-
         if (!preg_match('/\.(jpe?g|png)$/i', $size['file'])) {
           continue;
         }
-
-        $new_size = $this->materialize_webp($size_path);
-        if ($new_size === false) {
-          $webp_guess = preg_replace('/\.(jpe?g|png)$/i', '.webp', $size_path);
-          if (is_file($webp_guess)) {
-            $new_size = $webp_guess;
-          } else {
-            continue;
-          }
-        }
-        if ($new_size === null) {
+        $size_path = $dir . wp_basename($size['file']);
+        $new_size = $make($size_path);
+        if (!is_string($new_size)) {
           continue;
         }
-        if (is_string($new_size)) {
-          $old_base = wp_basename($size['file']);
-          $new_base = wp_basename($new_size);
-          $replacements[$rel($size_path)] = $rel($new_size);
-          $meta['sizes'][$size_name]['file'] = $new_base;
-          $meta['sizes'][$size_name]['mime-type'] = 'image/webp';
-          $info = @getimagesize($new_size);
-          if ($info) {
-            $meta['sizes'][$size_name]['width'] = $info[0];
-            $meta['sizes'][$size_name]['height'] = $info[1];
-          }
-          $pending_delete[] = $size_path;
-          $pending_delete[] = $size_path . '.webp';
-          $changed = true;
+        $replacements[$rel($size_path)] = $rel($new_size);
+        $meta['sizes'][$size_name]['file'] = wp_basename($new_size);
+        $meta['sizes'][$size_name]['mime-type'] = 'image/webp';
+        $info = @getimagesize($new_size);
+        if ($info) {
+          $meta['sizes'][$size_name]['width'] = $info[0];
+          $meta['sizes'][$size_name]['height'] = $info[1];
         }
+        $pending_delete[$size_path] = $new_size;
+        $changed = true;
       }
     }
 
@@ -741,30 +796,28 @@ final class WebNow_WebP_Batch {
     $replacements = $safe_replacements;
 
     foreach ($replacements as $old => $new) {
-      $this->replace_url_fragment($old, $new);
+      // Dạng .jpg.webp trước: thay "a.jpg" trước sẽ biến "a.jpg.webp" thành "a.webp.webp".
       if (preg_match('/\.(jpe?g|png)$/i', $old)) {
         $this->replace_url_fragment($old . '.webp', $new);
       }
+      $this->replace_url_fragment($old, $new);
     }
 
     // 2) Delete originals ONLY after DB updated AND target webp exists
     if ($this->delete_originals()) {
-      foreach (array_unique($pending_delete) as $del) {
-        if (!$del || !is_file($del) || wn_is_hardcoded_upload($del)) {
+      foreach ($pending_delete as $raster => $webp) {
+        if (!is_file($webp) || filesize($webp) < 1 || wn_is_hardcoded_upload($raster)) {
           continue;
         }
-        // Never delete the webp target itself.
-        if (preg_match('/\.webp$/i', $del) && !preg_match('/\.(jpe?g|png)\.webp$/i', $del)) {
+        // Attachment khác còn trỏ vào ảnh gốc này (ảnh dùng chung file) thì để lại.
+        if (wn_upload_file_owners($raster, $attachment_id)) {
           continue;
         }
-        // If deleting a raster, require the real .webp sibling to exist.
-        if (preg_match('/\.(jpe?g|png)$/i', $del)) {
-          $need = preg_replace('/\.(jpe?g|png)$/i', '.webp', $del);
-          if (!is_file($need) || filesize($need) < 1) {
-            continue;
+        foreach ([$raster, $raster . '.webp'] as $del) {
+          if (is_file($del) && $del !== $webp) {
+            @unlink($del);
           }
         }
-        @unlink($del);
       }
     }
 
@@ -811,11 +864,98 @@ final class WebNow_WebP_Batch {
     return ltrim(str_replace('\\', '/', $absolute), '/');
   }
 
+  /** Bản .jpg.webp đi kèm còn mới hơn ảnh gốc (hoặc ảnh gốc đã mất): là WebP của đúng file này. */
+  private function fresh_sidecar($path) {
+    $sidecar = $path . '.webp';
+    if (!is_file($sidecar) || filesize($sidecar) < 1) {
+      return false;
+    }
+    return !is_file($path) || filemtime($sidecar) >= filemtime($path);
+  }
+
+  /** File .webp có sẵn là bản đổi từ chính $path: giống hệt bản .jpg.webp đi kèm. */
+  private function is_own_webp($path, $target) {
+    $sidecar = $path . '.webp';
+    return is_file($target) && $this->fresh_sidecar($path)
+      && filesize($target) === filesize($sidecar) && md5_file($target) === md5_file($sidecar);
+  }
+
+  /** a.jpg → a.webp; có hậu tố thì chèn trước phần WP thêm vào: a-scaled.jpg → a-1-scaled.webp, a-150x150.jpg → a-1-150x150.webp. */
+  private function webp_name($src, $suffix) {
+    $name = pathinfo($src, PATHINFO_FILENAME);
+    if ($suffix !== '') {
+      $name = preg_replace('/^(.+?)((?:-scaled|-rotated)?(?:-\d+x\d+)?)$/', '${1}' . $suffix . '${2}', $name);
+    }
+    return trailingslashit(dirname($src)) . $name . '.webp';
+  }
+
+  /** $target dùng được cho $src: là bản WebP của chính nó, hoặc chưa có file và không attachment nào khác trỏ tới. */
+  private function webp_target_free($src, $target, $attachment_id) {
+    if ($this->is_own_webp($src, $target)) {
+      return true;
+    }
+    if (file_exists($target) || file_exists($target . '.tmp')) {
+      return false;
+    }
+    return !wn_upload_file_owners($target, $attachment_id);
+  }
+
   /**
-   * Create real .webp beside source. NEVER deletes originals (caller deletes after DB update).
+   * Chọn tên .webp cho các file JPG/PNG của 1 attachment ($attachment_id = 0: file lẻ).
+   *
+   * WP chỉ chống trùng tên theo từng đuôi, nên 1.jpg, 1.png và 1.webp có thể là 3 ảnh khác nhau nằm cạnh nhau.
+   * Chỉ đổi đuôi 1.jpg → 1.webp thì có thể trỏ vào file của ảnh khác (rồi xóa mất ảnh gốc). Vì vậy chỉ dùng
+   * lại file .webp có sẵn khi chắc chắn là bản đổi từ chính file đó (giống hệt bản .jpg.webp đi kèm); còn lại
+   * thử hậu tố -1, -2... chung cho mọi file của attachment để tên các size vẫn đồng bộ (1-1.webp, 1-1-150x150.webp).
+   * Ảnh gốc đã mất và không có bản đi kèm: chỉ nhận file .webp cùng tên khi không attachment nào khác dùng nó.
+   *
+   * @param string[] $sources đường dẫn tuyệt đối
+   * @return array<string,string> ảnh gốc => file .webp (ảnh không đổi được thì không có trong mảng)
+   */
+  public function plan_webp_targets(array $sources, $attachment_id = 0) {
+    $make = [];
+    $lost = [];
+    foreach (array_unique(array_map('wp_normalize_path', $sources)) as $src) {
+      if (!preg_match('/\.(jpe?g|png)$/i', $src)) {
+        continue;
+      }
+      if (is_file($src) || $this->fresh_sidecar($src)) {
+        $make[] = $src;
+      } else {
+        $lost[] = $src;
+      }
+    }
+    $plan = [];
+    for ($i = 0; $make && !$plan && $i < 100; $i++) {
+      $suffix = $i ? '-' . $i : '';
+      $try = [];
+      foreach ($make as $src) {
+        $target = $this->webp_name($src, $suffix);
+        if (in_array($target, $try, true) || !$this->webp_target_free($src, $target, $attachment_id)) {
+          $try = [];
+          break;
+        }
+        $try[$src] = $target;
+      }
+      $plan = $try;
+    }
+    foreach ($lost as $src) {
+      $target = $this->webp_name($src, '');
+      if (is_file($target) && filesize($target) > 0 && !in_array($target, $plan, true) && !wn_upload_file_owners($target, $attachment_id)) {
+        $plan[$src] = $target;
+      }
+    }
+    return $plan;
+  }
+
+  /**
+   * Tạo file .webp cho $path tại $target (tên do plan_webp_targets() chọn; bỏ trống thì tự chọn như file lẻ).
+   * Không bao giờ ghi đè hay dùng lại file .webp của ảnh khác. NEVER deletes originals (caller deletes after DB update).
+   * Ảnh được mã hóa vào bản đi kèm a.jpg.webp rồi chép sang $target: bản đi kèm là bằng chứng file .webp là
+   * của đúng ảnh này cho lần chạy sau, và bị xóa cùng ảnh gốc.
    * @return string|null|false new path | skip | fail
    */
-  public function materialize_webp($path) {
+  public function materialize_webp($path, $target = '') {
     $path = wp_normalize_path((string) $path);
     if ($path === '') {
       return false;
@@ -826,49 +966,48 @@ final class WebNow_WebP_Batch {
     if (!preg_match('/\.(jpe?g|png)$/i', $path)) {
       return null;
     }
-
-    $target = preg_replace('/\.(jpe?g|png)$/i', '.webp', $path);
-    $sidecar = $path . '.webp';
-
-    $source = '';
-    if (is_file($path)) {
-      $source = $path;
-    } elseif (is_file($sidecar)) {
-      $source = $sidecar;
-    } elseif (is_file($target) && filesize($target) > 0) {
-      return $target;
-    } else {
-      return false;
-    }
-
-    if (!is_file($target) || filesize($target) < 1) {
-      if (preg_match('/\.webp$/i', $source)) {
-        if (!@copy($source, $target)) {
-          return false;
-        }
-      } else {
-        if (!$this->encode_webp($source, $target)) {
-          return false;
-        }
+    if ($target === '') {
+      $target = $this->plan_webp_targets([$path])[$path] ?? '';
+      if ($target === '') {
+        return false;
       }
     }
-
-    if (!is_file($target) || filesize($target) < 1) {
+    $target = wp_normalize_path($target);
+    if ($this->is_own_webp($path, $target)) {
+      return $target;
+    }
+    if (!is_file($path) && !$this->fresh_sidecar($path)) {
+      // Ảnh gốc đã mất: chỉ nhận file .webp mà plan_webp_targets() đã xác nhận không ai khác dùng.
+      return is_file($target) && filesize($target) > 0 ? $target : false;
+    }
+    if (file_exists($target)) {
       return false;
     }
-
+    $sidecar = $path . '.webp';
+    if (!$this->fresh_sidecar($path) && !$this->encode_webp($path, $sidecar)) {
+      return false;
+    }
+    if (!@copy($sidecar, $target)) {
+      @unlink($target);
+      return false;
+    }
+    clearstatcache(true, $target);
+    if (!is_file($target) || filesize($target) < 1) {
+      @unlink($target);
+      return false;
+    }
     return $target;
   }
 
-  public function replace_file_with_webp($path, $replace_refs = true) {
+  /**
+   * File JPG/PNG lẻ (hoặc ảnh gốc vừa tải lên): tạo .webp, thay link trong DB, rồi mới xóa ảnh gốc.
+   * $target: tên .webp đã chọn sẵn (on_metadata); bỏ trống thì tự chọn.
+   */
+  public function replace_file_with_webp($path, $replace_refs = true, $target = '') {
+    $path = wp_normalize_path((string) $path);
     $old_base = wp_basename($path);
-    $webp = preg_replace('/\.(jpe?g|png)$/i', '.webp', $path);
 
-    // Ensure real .webp exists (from jpg or from sidecar .jpg.webp).
-    $new = $this->materialize_webp($path);
-    if ($new === false && is_file($webp) && filesize($webp) > 0) {
-      $new = $webp;
-    }
+    $new = $this->materialize_webp($path, $target);
     if ($new === false) {
       return false;
     }
@@ -876,18 +1015,17 @@ final class WebNow_WebP_Batch {
       $new = $path; // already webp path passed in
     }
 
-    $new_base = wp_basename($new);
     $old_rel = $this->relative_upload_path($path);
     $new_rel = $this->relative_upload_path($new);
 
-    // 1) DB first — theo đường dẫn tương đối, không chỉ tên file
+    // 1) DB first — theo đường dẫn tương đối, không chỉ tên file; dạng .jpg.webp trước.
     if ($replace_refs && preg_match('/\.(jpe?g|png)$/i', $old_base)) {
-      $this->replace_url_fragment($old_rel, $new_rel);
       $this->replace_url_fragment($old_rel . '.webp', $new_rel);
+      $this->replace_url_fragment($old_rel, $new_rel);
     }
 
-    // 2) Then delete originals
-    if ($this->delete_originals() && !wn_is_hardcoded_upload($path)) {
+    // 2) Then delete originals — trừ khi attachment nào đó còn trỏ vào file này.
+    if ($this->delete_originals() && !wn_is_hardcoded_upload($path) && $new !== $path && is_file($new) && !wn_upload_file_owners($path)) {
       if (is_file($path) && preg_match('/\.(jpe?g|png)$/i', $path)) {
         @unlink($path);
       }
@@ -927,7 +1065,9 @@ final class WebNow_WebP_Batch {
     }
     $tmp = $dest . '.tmp';
     $ok = @imagewebp($img, $tmp, $this->quality());
-    imagedestroy($img);
+    if (PHP_VERSION_ID < 80000) {
+      imagedestroy($img); // PHP 8+ tự giải phóng, 8.5 báo deprecated
+    }
     if (!$ok || !is_file($tmp)) {
       @unlink($tmp);
       return false;
@@ -944,8 +1084,13 @@ final class WebNow_WebP_Batch {
 
   /**
    * WP chỉ tránh trùng tên theo đuôi gốc: đã có "anh.webp" (từ "anh.png" trước đó, hoặc "anh.jpg"
-   * đã xóa ảnh gốc) mà tải "anh.jpg" thì vẫn giữ tên đó, materialize_webp() dùng lại file WebP cũ
-   * → ảnh mới hiện thành ảnh cũ. Đổi tên tới khi không đụng file .webp nào (kể cả các size).
+   * đã xóa ảnh gốc) mà tải "anh.jpg" thì vẫn giữ tên đó. Đổi tên tới khi không đụng ảnh cùng tên nào.
+   *
+   * Bản trước chỉ nhìn file .webp nên không chặn được trường hợp ảnh cùng tên CHƯA đổi sang WebP:
+   * có "1.jpg" (tải lên khi module tắt, hoặc đổi lỗi) rồi tải "1.png" thì "1.png" giữ tên, thành "1.webp";
+   * lần chuyển hàng loạt sau đó đổi "1.jpg" lại dùng nhầm "1.webp" này. Giờ coi mọi ảnh cùng tên
+   * (jpg/jpeg/png/webp, kể cả -scaled, -150x150) là trùng. Việc chọn tên .webp lúc đổi (plan_webp_targets)
+   * mới là chốt chặn chính; bước này chỉ để tên file dễ nhìn hơn.
    */
   public function unique_webp_name($filename, $ext, $dir) {
     $e = pathinfo($filename, PATHINFO_EXTENSION);
@@ -955,11 +1100,13 @@ final class WebNow_WebP_Batch {
     $dir = trailingslashit($dir);
     $name = pathinfo($filename, PATHINFO_FILENAME);
     $taken = function ($n) use ($dir, $e) {
-      if (file_exists($dir . $n . '.' . $e) || file_exists($dir . $n . '.webp')) {
-        return true;
+      foreach (array_unique([$e, 'jpg', 'jpeg', 'png', 'webp']) as $x) {
+        if (file_exists($dir . $n . '.' . $x)) {
+          return true;
+        }
       }
       foreach (glob($dir . $n . '-*.webp', GLOB_NOSORT) ?: [] as $f) {
-        if (preg_match('/^' . preg_quote($n, '/') . '-\d+x\d+\.webp$/', wp_basename($f))) {
+        if (preg_match('/^' . preg_quote($n, '/') . '-(?:scaled|rotated|\d+x\d+)\.webp$/', wp_basename($f))) {
           return true;
         }
       }
@@ -977,41 +1124,59 @@ final class WebNow_WebP_Batch {
 
   public function on_metadata($metadata, $attachment_id) {
     $file = get_attached_file($attachment_id);
-    if (!$file) {
+    if (!$file || !is_array($metadata)) {
       return $metadata;
     }
+    $file = wp_normalize_path($file);
     $dir = trailingslashit(dirname($file));
-    $converted = [];
 
+    // Chọn tên .webp cho cả file chính, ảnh gốc trước khi scale và các size một lượt (không dùng nhầm file của ảnh khác).
+    $sources = [];
     if (preg_match('/\.(jpe?g|png)$/i', $file)) {
-      $new_full = $this->materialize_webp($file);
-      if (is_string($new_full)) {
-        $metadata['file'] = $this->relative_upload_path($new_full);
-        update_attached_file($attachment_id, $new_full);
-        wp_update_post(['ID' => $attachment_id, 'post_mime_type' => 'image/webp']);
-        $converted[] = $file;
-        $dir = trailingslashit(dirname($new_full));
+      $sources[] = $file;
+    }
+    if (!empty($metadata['original_image']) && preg_match('/\.(jpe?g|png)$/i', $metadata['original_image'])) {
+      $sources[] = $dir . wp_basename($metadata['original_image']);
+    }
+    foreach ((array) ($metadata['sizes'] ?? []) as $size) {
+      if (!empty($size['file']) && preg_match('/\.(jpe?g|png)$/i', $size['file'])) {
+        $sources[] = $dir . wp_basename($size['file']);
+      }
+    }
+    $made = [];
+    foreach ($this->plan_webp_targets($sources, $attachment_id) as $src => $target) {
+      $new = $this->materialize_webp($src, $target);
+      if (is_string($new)) {
+        $made[$src] = $new;
       }
     }
 
+    if (isset($made[$file])) {
+      $metadata['file'] = $this->relative_upload_path($made[$file]);
+      update_attached_file($attachment_id, $made[$file]);
+      wp_update_post(['ID' => $attachment_id, 'post_mime_type' => 'image/webp']);
+    }
+    if (!empty($metadata['original_image']) && isset($made[$dir . wp_basename($metadata['original_image'])])) {
+      $metadata['original_image'] = wp_basename($made[$dir . wp_basename($metadata['original_image'])]);
+    }
     if (!empty($metadata['sizes']) && is_array($metadata['sizes'])) {
       foreach ($metadata['sizes'] as $name => $size) {
-        if (empty($size['file']) || !preg_match('/\.(jpe?g|png)$/i', $size['file'])) {
-          continue;
-        }
-        $new_size = $this->materialize_webp($dir . $size['file']);
-        if (is_string($new_size)) {
-          $metadata['sizes'][$name]['file'] = wp_basename($new_size);
+        $src = empty($size['file']) ? '' : $dir . wp_basename($size['file']);
+        if ($src !== '' && isset($made[$src])) {
+          $metadata['sizes'][$name]['file'] = wp_basename($made[$src]);
           $metadata['sizes'][$name]['mime-type'] = 'image/webp';
-          $converted[] = $dir . $size['file'];
         }
       }
     }
 
     // Xóa ảnh gốc sau 1 phút qua cron, không làm ngay: hook này cũng chạy khi tạo lại thumbnail cho ảnh cũ
     // đang có link trong bài, nên phải thay link trong DB trước (replace_file_with_webp) rồi mới xóa.
-    if ($converted && $this->delete_originals()) {
-      update_post_meta($attachment_id, '_wn_webp_originals', array_map([$this, 'relative_upload_path'], $converted));
+    if ($made && $this->delete_originals()) {
+      $converted = [];
+      foreach ($made as $src => $new) {
+        $converted[$this->relative_upload_path($src)] = $this->relative_upload_path($new);
+      }
+      update_post_meta($attachment_id, '_wn_webp_originals', $converted);
       if (!wp_next_scheduled('wn_webp_delete_originals', [$attachment_id])) {
         wp_schedule_single_event(time() + MINUTE_IN_SECONDS, 'wn_webp_delete_originals', [$attachment_id]);
       }
@@ -1026,9 +1191,12 @@ final class WebNow_WebP_Batch {
       return;
     }
     $base = trailingslashit(wp_get_upload_dir()['basedir']);
-    foreach ($rels as $rel) {
+    foreach ($rels as $k => $v) {
+      // Bản mới lưu "ảnh gốc => file .webp đã chọn"; bản cũ chỉ là danh sách ảnh gốc.
+      $rel = is_string($k) ? $k : (string) $v;
+      $target = is_string($k) ? $base . $v : '';
       if (is_file($base . $rel)) {
-        $this->replace_file_with_webp($base . $rel, true);
+        $this->replace_file_with_webp($base . $rel, true, $target);
       }
     }
   }

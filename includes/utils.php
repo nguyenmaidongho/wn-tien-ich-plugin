@@ -77,3 +77,43 @@ function wn_is_hardcoded_upload($abs) {
   $rel = preg_replace('/\.(jpe?g|png)\.webp$/i', '.$1', substr($abs, strlen($base)));
   return isset(wn_hardcoded_upload_images()[$rel]);
 }
+
+/**
+ * Attachment đang dùng 1 file trong uploads: làm file chính (_wp_attached_file), ảnh gốc trước khi scale,
+ * một size hoặc bản sửa (_wp_attachment_backup_sizes). Metadata chỉ ghi tên file nên so thêm thư mục.
+ * Khớp tên trong chuỗi serialize ("1-150x150.webp") nên có thể dư (coi là đang dùng) chứ không sót.
+ *
+ * @return int[] ID attachment, bỏ qua $exclude_id
+ */
+function wn_upload_file_owners($abs, $exclude_id = 0) {
+  global $wpdb;
+  $base = wp_normalize_path(trailingslashit(wp_get_upload_dir()['basedir']));
+  $abs = wp_normalize_path((string) $abs);
+  if (strpos($abs, $base) !== 0) {
+    return [];
+  }
+  $rel = substr($abs, strlen($base));
+  $dir = dirname($rel);
+  $ids = [];
+  $main = $wpdb->get_col($wpdb->prepare(
+    "SELECT post_id FROM {$wpdb->postmeta} WHERE meta_key = '_wp_attached_file' AND meta_value = %s AND post_id <> %d",
+    $rel,
+    (int) $exclude_id
+  ));
+  foreach ($main as $id) {
+    $ids[(int) $id] = 1;
+  }
+  $rows = $wpdb->get_results($wpdb->prepare(
+    "SELECT m.post_id, f.meta_value AS file FROM {$wpdb->postmeta} m
+     JOIN {$wpdb->postmeta} f ON f.post_id = m.post_id AND f.meta_key = '_wp_attached_file'
+     WHERE m.meta_key IN ('_wp_attachment_metadata', '_wp_attachment_backup_sizes') AND m.meta_value LIKE %s AND m.post_id <> %d",
+    '%' . $wpdb->esc_like('"' . wp_basename($rel) . '"') . '%',
+    (int) $exclude_id
+  ));
+  foreach ($rows as $r) {
+    if (dirname((string) $r->file) === $dir) {
+      $ids[(int) $r->post_id] = 1;
+    }
+  }
+  return array_keys($ids);
+}

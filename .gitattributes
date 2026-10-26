@@ -2,3 +2,5 @@
 *.png binary
 *.jpg binary
 *.mp3 binary
+# Bộ cập nhật tải zip từ GitHub: không kèm script kiểm tra.
+/tests export-ignore

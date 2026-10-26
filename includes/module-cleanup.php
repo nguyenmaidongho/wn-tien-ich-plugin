@@ -640,8 +640,14 @@ final class WN_Media_Cleanup {
     }
     $this->protect_dir();
     $moved = [];
+    $shared = [];
     foreach ($this->attachment_files($id) as $src) {
       $rel = substr($src, strlen($base));
+      // File mà attachment khác cũng trỏ tới (ảnh dùng chung file): chuyển đi là gãy ảnh đó, nên để nguyên.
+      if (wn_upload_file_owners($src, $id)) {
+        $shared[] = $rel;
+        continue;
+      }
       $dest = $dest_root . $rel;
       wp_mkdir_p(dirname($dest));
       if (!@rename($src, $dest)) {
@@ -657,7 +663,7 @@ final class WN_Media_Cleanup {
     usort($moved, function ($a, $b) use ($main) {
       return ($b === $main) <=> ($a === $main);
     });
-    update_post_meta($id, self::META, ['time' => time(), 'files' => $moved, 'status' => $post->post_status]);
+    update_post_meta($id, self::META, ['time' => time(), 'files' => $moved, 'shared' => $shared, 'status' => $post->post_status]);
     $this->set_status($id, self::STATUS);
     clean_post_cache($id);
     return true;
@@ -696,7 +702,14 @@ final class WN_Media_Cleanup {
     }
     $this->rmdir_tree($this->quarantine_base() . $id . '/');
     // File gốc đã không còn ở uploads nên WP chỉ dọn database (meta, liên kết term...).
-    if (!wp_delete_attachment($id, true)) {
+    // Riêng file dùng chung với attachment khác (để lại lúc cách ly) thì WP vẫn xóa theo metadata: chặn lại.
+    $keep = function ($file) use ($id) {
+      return $file && wn_upload_file_owners($file, $id) ? '' : $file;
+    };
+    add_filter('wp_delete_file', $keep);
+    $ok = wp_delete_attachment($id, true);
+    remove_filter('wp_delete_file', $keep);
+    if (!$ok) {
       return new WP_Error('delete', 'WordPress không xóa được attachment.');
     }
     return true;

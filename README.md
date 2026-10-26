@@ -308,7 +308,7 @@ Vẽ nét logo SVG khi trang đang tải rồi mờ dần (tối thiểu 3,5 gi�
 Nhúng Font Awesome 6 giống hệt plugin chính thức (cùng URL, handle, integrity hash), tải không chặn hiển thị. Tắt nếu theme/plugin khác đã nạp Font Awesome.
 
 ### Ảnh WebP
-Ảnh JPG/PNG tải lên tự đổi sang WebP (tên trùng file `.webp` có sẵn thì tự đổi tên). Bật tùy chọn xóa ảnh gốc thì bản JPG/PNG của ảnh vừa tải lên bị xóa sau 1 phút, sau khi đã thay link trong database. Công cụ **Media → WebP Batch Optimizer** chuyển hàng loạt ảnh cũ (cả bản gốc lẫn mọi kích thước): cập nhật database và metadata trước, rồi mới xóa ảnh gốc nếu bật tùy chọn đó (mặc định **giữ** ảnh gốc, Tối ưu web bật lên khi chạy bước chuyển WebP). Không bao giờ xóa ảnh có link viết cứng trong code, không đụng `wn-optimize/`, `wn-quarantine/`, `woocommerce_uploads/`. Chất lượng chỉnh được 60–92 (mặc định 82). Có URL chạy bằng cron với khóa bí mật: `?webnow_webp_cron=<khóa>&n=5`.
+Ảnh JPG/PNG tải lên tự đổi sang WebP. WordPress cho `1.jpg`, `1.png`, `1.webp` (3 ảnh khác nhau) nằm cạnh nhau, nên tên `.webp` không lấy theo kiểu đổi đuôi: chỉ dùng lại file `.webp` có sẵn khi chắc là bản đổi từ chính ảnh đó (giống hệt bản `1.jpg.webp` đi kèm), còn lại thêm hậu tố chung cho mọi size (`1-1.webp`, `1-1-150x150.webp`). Bản `ảnh.jpg.webp` đi kèm được giữ tới khi xóa ảnh gốc. Bật tùy chọn xóa ảnh gốc thì bản JPG/PNG của ảnh vừa tải lên bị xóa sau 1 phút, sau khi đã thay link trong database. Công cụ **Media → WebP Batch Optimizer** chuyển hàng loạt ảnh cũ (cả bản gốc lẫn mọi kích thước): cập nhật database và metadata trước, rồi mới xóa ảnh gốc nếu bật tùy chọn đó (mặc định **giữ** ảnh gốc, Tối ưu web bật lên khi chạy bước chuyển WebP). Không bao giờ xóa ảnh có link viết cứng trong code, không đụng `wn-optimize/`, `wn-quarantine/`, `woocommerce_uploads/`. Chất lượng chỉnh được 60–92 (mặc định 82). Có URL chạy bằng cron với khóa bí mật: `?webnow_webp_cron=<khóa>&n=5`.
 
 Module này **đổi hẳn file sang `.webp`**; khi bật, bước WebP của Tối ưu web cũng dùng cách này. Tắt module thì Tối ưu web tạo bản `.webp` **đi kèm** và giữ nguyên file gốc. Nếu đã có plugin khác chuyển WebP khi upload (vd. Foxtool) thì tắt module này.
 
@@ -317,6 +317,8 @@ Ba bước an toàn:
 1. **Quét:** đọc nội dung bài, meta (Elementor, ACF, WooCommerce...), options, theme mods, bảng của plugin khác và file theme, để biết ảnh nào đang dùng. Hơi nghi ngờ là coi như đang dùng.
 2. **Cách ly:** chuyển file sang `uploads/wn-quarantine/` và ẩn khỏi Thư viện. Web thiếu ảnh nào thì **Khôi phục** ảnh đó.
 3. **Xóa hẳn** những ảnh còn lại sau vài ngày theo dõi.
+
+File mà attachment khác cũng dùng (ảnh trùng file) không bị chuyển khi cách ly và không bị xóa khi xóa hẳn.
 
 Nên sao lưu database + uploads trước khi xóa hẳn.
 
@@ -399,6 +401,7 @@ includes/
     admin-page.php           Trang WebNow: các tab, lưu cài đặt
     admin.css, admin.js      Giao diện chung
     optimize.css, optimize.js  Giao diện trình hướng dẫn Tối ưu web
+tests/webp-collision-test.php  Kiểm tra trùng tên WebP + Dọn ảnh (chỉ chạy trên site test, không có trong bản cập nhật)
 assets/tet/                  Ảnh, nhạc trang trí Tết
 css/, images/                Trang đăng nhập, tìm kiếm, logo
 ```
@@ -417,6 +420,14 @@ Thêm một mục kiểm tra/bước sửa cho Tối ưu web:
 ---
 
 ## Lịch sử phiên bản
+
+### 1.6.1
+- **Sửa lỗi nghiêm trọng Ảnh WebP: ảnh hiện thành ảnh của sản phẩm khác.** WordPress cho `1.jpg`, `1.png`, `1.webp` nằm cạnh nhau; khi đổi `1.jpg` mà đã có `1.webp` (của ảnh khác) thì module dùng luôn file đó và xóa ảnh gốc. Giờ chỉ dùng lại `.webp` có sẵn khi chắc là của chính ảnh đó, còn lại chọn tên trống (`1-1.webp`, các size `1-1-150x150.webp`). Áp dụng cho chuyển hàng loạt, ảnh tải lên và file lẻ. Không xóa ảnh gốc mà attachment khác còn trỏ tới.
+- Ảnh WebP: tải `1.png` khi đã có `1.jpg` chưa đổi WebP cũng được đổi tên (bản trước chỉ nhìn file `.webp`).
+- Ảnh WebP: chuyển luôn ảnh gốc trước khi thu nhỏ (`original_image`, ảnh `-scaled`) và cập nhật metadata, thay vì coi là file lẻ.
+- Ảnh WebP: trang chuyển hàng loạt không còn quét lại toàn bộ uploads sau mỗi lượt 5 ảnh (site ~1.300 ảnh chạy hàng giờ); file thuộc attachment không còn bị đếm thêm lần nữa trong "file lẻ".
+- Dọn ảnh: không cách ly/xóa file mà một attachment khác (đang dùng) cũng trỏ tới.
+- Thêm `tests/webp-collision-test.php` (chạy trên site test).
 
 ### 1.6
 - **Tự cập nhật từ GitHub**: push lên `main` là site thấy bản mới. Chỉ báo bằng một nút nhỏ cạnh số phiên bản trong trang WebNow. Kiểm tra cú pháp trước khi cài, gọi thử code mới và tự trả bản cũ nếu lỗi, có nút Khôi phục bản trước. Hằng `WN_UPDATE_BRANCH` để site staging theo nhánh khác.
