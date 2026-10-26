@@ -39,6 +39,7 @@ $dir = $base . $sub . '/';
 $created = ['attachments' => [], 'posts' => []];
 $old_delete = get_option(WebNow_WebP_Batch::OPT_DELETE_ORIGINALS, '0');
 $old_queue = get_option(WebNow_WebP_Batch::OPT_QUEUE, []);
+$old_loose = get_option('webnow_webp_loose_map', []);
 $fails = 0;
 
 $colors = ['red' => [220, 20, 20], 'blue' => [20, 20, 220], 'green' => [20, 200, 20], 'yellow' => [230, 220, 20], 'cyan' => [20, 210, 220]];
@@ -235,6 +236,60 @@ try {
   wn_t_check(count(array_filter($shared_files, 'is_file')) === count($shared_files), 'mọi file J dùng chung với K vẫn ở uploads');
   wn_t_check($call('delete_forever', $j) === true && count(array_filter($shared_files, 'is_file')) === count($shared_files), 'xóa hẳn J vẫn giữ file của K');
   $created['attachments'] = array_diff($created['attachments'], [$j]);
+
+  echo "7. Nút \"Sửa link JPG đã xóa\": link còn sót trỏ vào ảnh gốc đã mất\n";
+  $rb = wn_t_attachment('r1.png', 'blue');
+  $ra = wn_t_attachment('r1.jpg', 'red');
+  $webp->convert_attachment($rb);
+  $webp->convert_attachment($ra);
+  // Link sót lại sau khi đổi (vd. dán tay, plugin lưu chỗ khác) — trong bài, meta dạng JSON và option.
+  $pr = wn_t_post('<img src="' . $url . 'r1.jpg"><img src="' . $url . 'r2.jpg"><img src="' . $url . 'r3.jpg"><img src="' . $url . 'r4.jpg">');
+  update_post_meta($pr, '_wn_test_json', wp_slash(wp_json_encode(['url' => $url . 'r1.jpg'])));
+  update_option('wn_webp_test_opt', ['img' => $url . 'r1.jpg'], false);
+  // r2: còn r2.png (ảnh khác) cạnh r2.webp → không biết r2.webp của ai.
+  wn_t_image($dir . 'r2.webp', 'blue');
+  wn_t_image($dir . 'r2.png', 'yellow');
+  // r3: chỉ có r3.webp, không ảnh gốc nào khác cùng tên → nhận như trước.
+  wn_t_image($dir . 'r3.webp', 'red');
+  // r4: còn bản r4.jpg.webp (đỏ) nhưng r4.webp là ảnh WebP tải lên khác (xanh lơ).
+  wn_t_attachment('r4.webp', 'cyan');
+  wn_t_image($dir . 'r4.jpg.webp', 'red');
+  // r5: r5.jpg.webp (đỏ) và r5.png (xanh) cùng tên, chưa có r5.webp → không tự chép thành r5.webp.
+  wn_t_image($dir . 'r5.jpg.webp', 'red');
+  wn_t_image($dir . 'r5.png', 'blue');
+  $webp->repair_broken_raster_links();
+  $content = wn_t_content($pr);
+  wn_t_check(strpos($content, $sub . '/r1-1.webp"') !== false && strpos($content, $sub . '/r1.webp"') === false, 'r1.jpg → r1-1.webp (theo bản ghi), không phải r1.webp của ảnh xanh');
+  wn_t_check(strpos($content, $sub . '/r2.jpg"') !== false, 'r2.jpg giữ nguyên (r2.webp có thể là của r2.png)');
+  wn_t_check(strpos($content, $sub . '/r3.webp"') !== false, 'r3.jpg → r3.webp (không có ảnh nào khác cùng tên)');
+  wn_t_check(strpos($content, $sub . '/r4-1.webp"') !== false && wn_t_color($dir . 'r4-1.webp') === 'red' && wn_t_color($dir . 'r4.webp') === 'cyan', 'r4.jpg → r4-1.webp chép từ r4.jpg.webp, r4.webp của ảnh khác giữ nguyên');
+  wn_t_check(!file_exists($dir . 'r5.webp'), 'không tự tạo r5.webp từ r5.jpg.webp khi còn r5.png');
+  wp_cache_flush();
+  wn_t_check(strpos((string) get_post_meta($pr, '_wn_test_json', true), 'r1-1.webp') !== false, 'meta JSON: r1.jpg → r1-1.webp');
+  $opt = get_option('wn_webp_test_opt');
+  wn_t_check(strpos((string) ($opt['img'] ?? ''), $sub . '/r1-1.webp') !== false, 'option: r1.jpg → r1-1.webp');
+  delete_option('wn_webp_test_opt');
+
+  echo "8. Dọn ảnh: file a.webp / a.avif cùng tên cạnh ảnh không dùng\n";
+  $q1 = wn_t_attachment('q1.jpg', 'green');
+  wn_t_image($dir . 'q1.webp', 'blue');
+  wn_t_image($dir . 'q1.png', 'blue');
+  $q2 = wn_t_attachment('q2.jpg', 'green');
+  wn_t_image($dir . 'q2.webp', 'green');
+  $q3 = wn_t_attachment('q3.jpg', 'green');
+  wn_t_image($dir . 'q3.webp', 'blue');
+  // Bản ghi đổi WebP: q3.webp được đổi từ q3.png (đã xóa).
+  $loose = get_option('webnow_webp_loose_map', []);
+  update_option('webnow_webp_loose_map', array_merge(is_array($loose) ? $loose : [], [$sub . '/q3.png' => $sub . '/q3.webp']), false);
+  $call('quarantine', $q1);
+  $call('quarantine', $q2);
+  $call('quarantine', $q3);
+  wn_t_check(is_file($dir . 'q1.webp'), 'q1.webp giữ lại (còn q1.png cùng tên, không biết của ai)');
+  wn_t_check(!is_file($dir . 'q2.webp'), 'q2.webp đi cùng q2.jpg vào cách ly (không có ảnh nào khác cùng tên)');
+  wn_t_check(is_file($dir . 'q3.webp'), 'q3.webp giữ lại (bản ghi nói nó đổi từ q3.png)');
+  foreach ([$q1, $q2, $q3] as $q) {
+    $call('restore', $q);
+  }
 } finally {
   foreach ($created['posts'] as $id) {
     wp_delete_post($id, true);
@@ -251,6 +306,7 @@ try {
   }
   update_option(WebNow_WebP_Batch::OPT_DELETE_ORIGINALS, $old_delete, false);
   update_option(WebNow_WebP_Batch::OPT_QUEUE, $old_queue, false);
+  update_option('webnow_webp_loose_map', $old_loose, false);
 }
 
 echo $fails ? "\n$fails kiểm tra SAI\n" : "\nTất cả kiểm tra đều đúng\n";

@@ -117,3 +117,61 @@ function wn_upload_file_owners($abs, $exclude_id = 0) {
   }
   return array_keys($ids);
 }
+
+/**
+ * Ghi lại ảnh gốc → file .webp đã đổi (đường dẫn tương đối trong uploads). Tên .webp không còn suy ra được
+ * từ tên ảnh gốc (1.jpg có thể thành 1-1.webp), nên nút "Sửa link" và Dọn ảnh tra ở đây.
+ * Attachment lưu ở meta _wn_webp_map, file lẻ lưu ở option webnow_webp_loose_map.
+ */
+function wn_webp_remember(array $map, $attachment_id = 0) {
+  $map = array_filter($map, function ($webp, $src) {
+    return is_string($src) && is_string($webp) && $src !== '' && $webp !== '' && $src !== $webp;
+  }, ARRAY_FILTER_USE_BOTH);
+  if (!$map) {
+    return;
+  }
+  if ($attachment_id) {
+    $old = get_post_meta($attachment_id, '_wn_webp_map', true);
+    update_post_meta($attachment_id, '_wn_webp_map', array_merge(is_array($old) ? $old : [], $map));
+  } else {
+    $old = get_option('webnow_webp_loose_map', []);
+    update_option('webnow_webp_loose_map', array_merge(is_array($old) ? $old : [], $map), false);
+  }
+}
+
+/** Các bản ghi đổi WebP có $rel ở phía ảnh gốc hoặc phía .webp. @return array<int,array{0:string,1:string}> [ảnh gốc, .webp] */
+function wn_webp_map_find($rel) {
+  global $wpdb;
+  $maps = array_map('maybe_unserialize', $wpdb->get_col($wpdb->prepare(
+    "SELECT meta_value FROM {$wpdb->postmeta} WHERE meta_key = '_wn_webp_map' AND meta_value LIKE %s",
+    '%' . $wpdb->esc_like('"' . $rel . '"') . '%'
+  )));
+  $maps[] = get_option('webnow_webp_loose_map', []);
+  $out = [];
+  foreach ($maps as $map) {
+    foreach (is_array($map) ? $map : [] as $src => $webp) {
+      if ($src === $rel || $webp === $rel) {
+        $out[] = [(string) $src, (string) $webp];
+      }
+    }
+  }
+  return $out;
+}
+
+/**
+ * Có ảnh gốc JPG/PNG khác cùng tên với $abs (1.png, 1.jpeg cạnh 1.jpg) còn trên đĩa, còn bản .jpg.webp đi kèm,
+ * hoặc còn được attachment trỏ tới: khi đó không đoán được 1.webp / 1.avif là của file nào.
+ */
+function wn_raster_rivals($abs) {
+  $abs = wp_normalize_path((string) $abs);
+  foreach (['jpg', 'jpeg', 'png'] as $x) {
+    $sib = preg_replace('/\.[a-z0-9]+$/i', '.' . $x, $abs);
+    if (strcasecmp($sib, $abs) === 0) {
+      continue;
+    }
+    if (is_file($sib) || is_file($sib . '.webp') || wn_upload_file_owners($sib)) {
+      return true;
+    }
+  }
+  return false;
+}

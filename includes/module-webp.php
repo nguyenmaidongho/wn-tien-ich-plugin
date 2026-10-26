@@ -16,6 +16,7 @@ final class WebNow_WebP_Batch {
   const OPT_QUALITY = 'webnow_webp_quality';
   const OPT_SECRET = 'webnow_webp_cron_secret';
   const OPT_DELETE_ORIGINALS = 'webnow_webp_delete_originals';
+  const OPT_LOOSE_MAP = 'webnow_webp_loose_map'; // xem wn_webp_remember()
   const BATCH = 5;
 
   /** Bản đang chạy, để Tối ưu web gọi lại mà không đăng ký hook lần hai. */
@@ -346,76 +347,35 @@ final class WebNow_WebP_Batch {
   public function repair_broken_raster_links() {
     global $wpdb;
     $basedir = trailingslashit(wp_get_upload_dir()['basedir']);
-    $baseurl = trailingslashit(wp_get_upload_dir()['baseurl']);
     $fixed = 0;
 
     // First: materialize any missing real .webp from sidecars (fixes 404 when DB already points to .webp).
     $fixed += $this->materialize_all_sidecars();
 
-    // Scan post_content for uploads/*.jpg|png
+    // Scan post_content for uploads/*.jpg|png (cả dạng .jpg.webp)
     $posts = $wpdb->get_results(
       "SELECT ID, post_content FROM {$wpdb->posts} WHERE post_content LIKE '%/wp-content/uploads/%' AND (post_content LIKE '%.jpg%' OR post_content LIKE '%.jpeg%' OR post_content LIKE '%.png%')"
     );
     foreach ($posts as $post) {
       $content = $post->post_content;
       $new = preg_replace_callback(
-        '#((?:https?://[^/]+)?/wp-content/uploads/[^\"\'\s>]+)\.(jpe?g|png)(?!\.webp)#i',
-        function ($m) use ($basedir, $baseurl, &$fixed) {
-          $rel = $m[1];
-          // strip domain to relative uploads path
-          $pos = stripos($rel, '/wp-content/uploads/');
-          if ($pos === false) {
-            return $m[0];
-          }
-          $rel_path = substr($rel, $pos + strlen('/wp-content/uploads/')) . '.' . $m[2];
-          $abs = $basedir . ltrim(str_replace('\\', '/', $rel_path), '/');
-          $webp = preg_replace('/\.(jpe?g|png)$/i', '.webp', $abs);
-          $sidecar = $abs . '.webp';
-
-          if (!is_file($abs)) {
-            if (!is_file($webp) && is_file($sidecar)) {
-              @copy($sidecar, $webp);
-            }
-            if (is_file($webp)) {
-              $fixed++;
-              return preg_replace('/\.(jpe?g|png)$/i', '.webp', $m[0]);
-            }
-          } elseif (is_file($webp) || is_file($sidecar)) {
-            // File jpg still exists OR webp exists — still normalize URL to .webp if webp ready
-            if (!is_file($webp) && is_file($sidecar)) {
-              @copy($sidecar, $webp);
-            }
-            if (is_file($webp)) {
-              $fixed++;
-              return preg_replace('/\.(jpe?g|png)$/i', '.webp', $m[0]);
-            }
-          }
-          return $m[0];
-        },
-        $content
-      );
-      // Also normalize leftover .jpg.webp → .webp when real webp exists
-      $new = preg_replace_callback(
-        '#((?:https?://[^/]+)?/wp-content/uploads/[^\"\'\s>]+)\.(jpe?g|png)\.webp#i',
+        '#((?:https?://[^/]+)?/wp-content/uploads/[^\"\'\s>]+)\.(jpe?g|png)(\.webp)?#i',
         function ($m) use ($basedir, &$fixed) {
           $pos = stripos($m[1], '/wp-content/uploads/');
           if ($pos === false) {
             return $m[0];
           }
-          $rel = substr($m[1], $pos + strlen('/wp-content/uploads/')) . '.' . $m[2];
-          $abs_jpg = $basedir . ltrim($rel, '/');
-          $webp = preg_replace('/\.(jpe?g|png)$/i', '.webp', $abs_jpg);
-          $sidecar = $abs_jpg . '.webp';
-          if (!is_file($webp) && is_file($sidecar)) {
-            @copy($sidecar, $webp);
+          $rel_path = substr($m[1], $pos + strlen('/wp-content/uploads/')) . '.' . $m[2];
+          $abs = $basedir . ltrim(str_replace('\\', '/', rawurldecode($rel_path)), '/');
+          // Link .jpg còn file thì không hỏng gì; chỉ đổi khi có bản ghi hoặc bản .jpg.webp chứng minh file .webp.
+          $webp = $this->webp_for_raster($abs);
+          if ($webp === '') {
+            return $m[0];
           }
-          if (is_file($webp)) {
-            $fixed++;
-            return preg_replace('/\.(jpe?g|png)\.webp$/i', '.webp', $m[0]);
-          }
-          return $m[0];
+          $fixed++;
+          return $this->swap_basename($m[1], $webp) . '.webp';
         },
-        $new
+        $content
       );
       if ($new !== $content) {
         $wpdb->update($wpdb->posts, ['post_content' => $new], ['ID' => $post->ID]);
@@ -445,6 +405,62 @@ final class WebNow_WebP_Batch {
     return $fixed;
   }
 
+  /**
+   * File .webp đúng của 1 ảnh JPG/PNG (để sửa link còn trỏ vào nó), '' nếu không chắc.
+   * 1) Bản ghi lúc đổi (_wn_webp_map / webnow_webp_loose_map): chắc chắn, kể cả khi tên đã thành 1-1.webp.
+   * 2) Bản .jpg.webp đi kèm: file .webp giống hệt nó, hoặc chép nó sang một tên trống.
+   * 3) Ảnh gốc đã mất: nhận 1.webp cùng tên chỉ khi không có ảnh gốc khác cùng tên (1.png...) có thể đã
+   *    sinh ra nó, và không có bản ghi nói 1.webp đổi từ file khác. Trước đây cứ có 1.webp là đổi link.
+   */
+  private function webp_for_raster($abs) {
+    static $cache = [];
+    $abs = wp_normalize_path((string) $abs);
+    if (isset($cache[$abs])) {
+      return $cache[$abs];
+    }
+    $basedir = wp_normalize_path(trailingslashit(wp_get_upload_dir()['basedir']));
+    $rel = $this->relative_upload_path($abs);
+    foreach (wn_webp_map_find($rel) as list($src, $webp)) {
+      if ($src === $rel && is_file($basedir . $webp)) {
+        return $cache[$abs] = $basedir . $webp;
+      }
+    }
+    if ($this->fresh_sidecar($abs)) {
+      $new = $this->materialize_webp($abs);
+      if (is_string($new)) {
+        wn_webp_remember([$rel => $this->relative_upload_path($new)]);
+      }
+      return $cache[$abs] = is_string($new) ? $new : '';
+    }
+    $cache[$abs] = '';
+    if (is_file($abs)) {
+      return '';
+    }
+    $webp = $this->webp_name($abs, '');
+    if (!is_file($webp) || filesize($webp) < 1 || wn_raster_rivals($abs)) {
+      return '';
+    }
+    $webp_rel = $this->relative_upload_path($webp);
+    foreach (wn_webp_map_find($webp_rel) as list($src, $w)) {
+      if ($w === $webp_rel && $src !== $rel) {
+        return '';
+      }
+    }
+    return $cache[$abs] = $webp;
+  }
+
+  /** "…/2026/10/1" + "/…/2026/10/1-1.webp" → "…/2026/10/1-1" (giữ kiểu "\/" của JSON và tên mã hóa %E4…). */
+  private function swap_basename($prefix_with_stem, $new_abs) {
+    $cut = strrpos($prefix_with_stem, '/');
+    $cut = $cut === false ? -1 : $cut;
+    $old_stem = substr($prefix_with_stem, $cut + 1);
+    $stem = pathinfo($new_abs, PATHINFO_FILENAME);
+    if (strpos($old_stem, '%') !== false) {
+      $stem = rawurlencode($stem);
+    }
+    return substr($prefix_with_stem, 0, $cut + 1) . $stem;
+  }
+
   /** Bảng của plugin lưu link ảnh riêng (Smart Slider 3...). Thêm bảng khác qua filter. */
   private function extra_ref_tables() {
     global $wpdb;
@@ -464,18 +480,18 @@ final class WebNow_WebP_Batch {
     return preg_replace_callback(
       '#((?:wp-content\\\\?/uploads|\$upload\$)\\\\?/)([^"\'\s<>()]+?)\.(jpe?g|png)(\.webp)?(?![a-z0-9])#i',
       function ($m) use ($basedir, &$fixed) {
-        $rel = ltrim(str_replace('\/', '/', $m[2]), '/');
+        $rel = ltrim(str_replace('\/', '/', rawurldecode($m[2])), '/');
         $abs = $basedir . $rel . '.' . $m[3];
-        $webp = $basedir . $rel . '.webp';
-        if (!is_file($webp) && is_file($abs . '.webp')) {
-          @copy($abs . '.webp', $webp);
+        // Chỉ đổi khi file gốc đã mất (hoặc link đang là .jpg.webp) và biết chắc file .webp nào là của nó.
+        if (is_file($abs) && empty($m[4])) {
+          return $m[0];
         }
-        // Chỉ đổi khi file gốc đã mất (hoặc link đang là .jpg.webp) và .webp có thật.
-        if ((!is_file($abs) || !empty($m[4])) && is_file($webp)) {
-          $fixed++;
-          return $m[1] . $m[2] . '.webp';
+        $webp = $this->webp_for_raster($abs);
+        if ($webp === '') {
+          return $m[0];
         }
-        return $m[0];
+        $fixed++;
+        return $m[1] . $this->swap_basename($m[2], $webp) . '.webp';
       },
       $text
     );
@@ -514,7 +530,7 @@ final class WebNow_WebP_Batch {
 
     $rows = $wpdb->get_results(
       "SELECT meta_id, meta_value FROM {$wpdb->postmeta}
-       WHERE meta_key NOT IN ('_wp_attached_file','_wp_attachment_metadata','_wp_attachment_backup_sizes')
+       WHERE meta_key NOT IN ('_wp_attached_file','_wp_attachment_metadata','_wp_attachment_backup_sizes','_wn_webp_map','_wn_webp_originals','_wn_quarantine')
          AND " . sprintf($like, 'meta_value', 'meta_value')
     );
     foreach ($rows as $r) {
@@ -526,7 +542,7 @@ final class WebNow_WebP_Batch {
 
     $rows = $wpdb->get_results(
       "SELECT option_id, option_value FROM {$wpdb->options}
-       WHERE option_name NOT LIKE '\_%%transient\_%%' AND option_name <> '" . esc_sql(self::OPT_QUEUE) . "'
+       WHERE option_name NOT LIKE '\_%%transient\_%%' AND option_name NOT IN ('" . esc_sql(self::OPT_QUEUE) . "', '" . esc_sql(self::OPT_LOOSE_MAP) . "')
          AND " . sprintf($like, 'option_value', 'option_value')
     );
     foreach ($rows as $r) {
@@ -780,6 +796,11 @@ final class WebNow_WebP_Batch {
       'post_mime_type' => 'image/webp',
     ]);
     wp_update_attachment_metadata($attachment_id, $meta);
+    $done = [];
+    foreach ($pending_delete as $raster => $webp) {
+      $done[$this->relative_upload_path($raster)] = $this->relative_upload_path($webp);
+    }
+    wn_webp_remember($done, $attachment_id);
 
     // Only rewrite URLs when every new basename actually exists on disk.
     $safe_replacements = [];
@@ -845,7 +866,14 @@ final class WebNow_WebP_Batch {
         continue;
       }
       $target = preg_replace('/\.(jpe?g|png)\.webp$/i', '.webp', $path);
-      if (is_file($target) && filesize($target) > 0) {
+      if (file_exists($target)) {
+        continue;
+      }
+      // 1.jpg.webp → 1.webp chỉ khi không có ảnh gốc khác cùng tên và không có bản ghi nói 1.webp là của file khác.
+      $raster = substr($path, 0, -5);
+      if (wn_raster_rivals($raster) || array_filter(wn_webp_map_find($this->relative_upload_path($target)), function ($r) use ($raster) {
+        return $r[0] !== $this->relative_upload_path($raster);
+      })) {
         continue;
       }
       if (@copy($path, $target) && is_file($target) && filesize($target) > 0) {
@@ -1017,6 +1045,9 @@ final class WebNow_WebP_Batch {
 
     $old_rel = $this->relative_upload_path($path);
     $new_rel = $this->relative_upload_path($new);
+    if ($new !== $path && !wn_upload_file_owners($new)) {
+      wn_webp_remember([$old_rel => $new_rel]);
+    }
 
     // 1) DB first — theo đường dẫn tương đối, không chỉ tên file; dạng .jpg.webp trước.
     if ($replace_refs && preg_match('/\.(jpe?g|png)$/i', $old_base)) {
@@ -1156,6 +1187,11 @@ final class WebNow_WebP_Batch {
       update_attached_file($attachment_id, $made[$file]);
       wp_update_post(['ID' => $attachment_id, 'post_mime_type' => 'image/webp']);
     }
+    $done = [];
+    foreach ($made as $src => $new) {
+      $done[$this->relative_upload_path($src)] = $this->relative_upload_path($new);
+    }
+    wn_webp_remember($done, $attachment_id);
     if (!empty($metadata['original_image']) && isset($made[$dir . wp_basename($metadata['original_image'])])) {
       $metadata['original_image'] = wp_basename($made[$dir . wp_basename($metadata['original_image'])]);
     }
@@ -1227,8 +1263,10 @@ final class WebNow_WebP_Batch {
       $new
     ));
 
+    // Bản ghi ảnh gốc → .webp và danh sách file cách ly phải giữ đúng tên cũ.
+    $own_keys = "meta_key NOT IN ('_wn_webp_map', '_wn_webp_originals', '_wn_quarantine')";
     $rows = $wpdb->get_results($wpdb->prepare(
-      "SELECT meta_id, meta_value FROM {$wpdb->postmeta} WHERE meta_value LIKE %s",
+      "SELECT meta_id, meta_value FROM {$wpdb->postmeta} WHERE $own_keys AND meta_value LIKE %s",
       '%' . $wpdb->esc_like($old) . '%'
     ));
     foreach ($rows as $row) {
@@ -1242,7 +1280,7 @@ final class WebNow_WebP_Batch {
     $old_json = str_replace('/', '\/', $old);
     if ($old_json !== $old) {
       $rows = $wpdb->get_results($wpdb->prepare(
-        "SELECT meta_id, meta_value FROM {$wpdb->postmeta} WHERE meta_value LIKE %s",
+        "SELECT meta_id, meta_value FROM {$wpdb->postmeta} WHERE $own_keys AND meta_value LIKE %s",
         '%' . $wpdb->esc_like($old_json) . '%'
       ));
       foreach ($rows as $row) {
@@ -1265,7 +1303,8 @@ final class WebNow_WebP_Batch {
     }
 
     $opts = $wpdb->get_results($wpdb->prepare(
-      "SELECT option_id, option_value FROM {$wpdb->options} WHERE option_value LIKE %s",
+      "SELECT option_id, option_value FROM {$wpdb->options} WHERE option_name <> %s AND option_value LIKE %s",
+      self::OPT_LOOSE_MAP,
       '%' . $wpdb->esc_like($old) . '%'
     ));
     foreach ($opts as $row) {
