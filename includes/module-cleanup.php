@@ -332,7 +332,7 @@ final class WN_Media_Cleanup {
         $rows = $wpdb->get_results($wpdb->prepare(
           "SELECT option_id AS k, option_name AS name, option_value AS v FROM {$wpdb->options}
            WHERE option_id > %d AND option_name NOT LIKE '\\_transient\\_%%' AND option_name NOT LIKE '\\_site\\_transient\\_%%'
-             AND option_name NOT IN (%s, %s, 'cron', 'webnow_webp_queue_v32')
+             AND option_name NOT IN (%s, %s, 'cron', 'webnow_webp_queue_v32', 'webnow_webp_loose_map')
            ORDER BY option_id LIMIT %d", $c, self::OPT_SCAN, self::OPT_RESULT, $n), ARRAY_A);
         foreach ($rows as $r) {
           $this->scan_value($r['name'], $r['v'], $state, false);
@@ -617,13 +617,43 @@ final class WN_Media_Cleanup {
     $paths = [];
     foreach (array_unique($names) as $name) {
       $p = $dir . basename($name);
-      foreach ([$p, $p . '.webp', preg_replace('/\.[a-z0-9]+$/i', '.webp', $p), preg_replace('/\.[a-z0-9]+$/i', '.avif', $p)] as $cand) {
+      $cands = [$p, $p . '.webp'];
+      foreach (['.webp', '.avif'] as $x) {
+        $alt = preg_replace('/\.[a-z0-9]+$/i', $x, $p);
+        if ($alt !== $p && $this->same_stem_is_ours($p, $alt)) {
+          $cands[] = $alt;
+        }
+      }
+      foreach ($cands as $cand) {
         if (strpos($cand, $base) === 0 && strpos($cand, '/' . self::DIR . '/') === false && is_file($cand)) {
           $paths[$cand] = 1;
         }
       }
     }
     return array_keys($paths);
+  }
+
+  /**
+   * a.webp / a.avif cạnh a.jpg (plugin WebP khác tạo) chỉ tính là file của ảnh này khi chắc chắn: không có ảnh gốc
+   * khác cùng tên (a.png cạnh a.jpg) có thể đã sinh ra nó, và không có bản ghi đổi WebP nói nó từ file khác.
+   * Không chắc thì để nguyên trong uploads (quá lắm là sót file rác, không làm gãy ảnh).
+   */
+  private function same_stem_is_ours($p, $alt) {
+    if (!is_file($alt)) {
+      return false;
+    }
+    if (wn_raster_rivals($p)) {
+      return false;
+    }
+    $base = $this->uploads_base();
+    $rel = substr($p, strlen($base));
+    $alt_rel = substr($alt, strlen($base));
+    foreach (wn_webp_map_find($alt_rel) as list($src, $webp)) {
+      if ($webp === $alt_rel && $src !== $rel) {
+        return false;
+      }
+    }
+    return true;
   }
 
   /* ---------- Cách ly / khôi phục / xóa ---------- */
@@ -640,8 +670,14 @@ final class WN_Media_Cleanup {
     }
     $this->protect_dir();
     $moved = [];
+    $shared = [];
     foreach ($this->attachment_files($id) as $src) {
       $rel = substr($src, strlen($base));
+      // File mà attachment khác cũng trỏ tới (ảnh dùng chung file): chuyển đi là gãy ảnh đó, nên để nguyên.
+      if (wn_upload_file_owners($src, $id)) {
+        $shared[] = $rel;
+        continue;
+      }
       $dest = $dest_root . $rel;
       wp_mkdir_p(dirname($dest));
       if (!@rename($src, $dest)) {
@@ -657,7 +693,7 @@ final class WN_Media_Cleanup {
     usort($moved, function ($a, $b) use ($main) {
       return ($b === $main) <=> ($a === $main);
     });
-    update_post_meta($id, self::META, ['time' => time(), 'files' => $moved, 'status' => $post->post_status]);
+    update_post_meta($id, self::META, ['time' => time(), 'files' => $moved, 'shared' => $shared, 'status' => $post->post_status]);
     $this->set_status($id, self::STATUS);
     clean_post_cache($id);
     return true;
@@ -696,7 +732,14 @@ final class WN_Media_Cleanup {
     }
     $this->rmdir_tree($this->quarantine_base() . $id . '/');
     // File gốc đã không còn ở uploads nên WP chỉ dọn database (meta, liên kết term...).
-    if (!wp_delete_attachment($id, true)) {
+    // Riêng file dùng chung với attachment khác (để lại lúc cách ly) thì WP vẫn xóa theo metadata: chặn lại.
+    $keep = function ($file) use ($id) {
+      return $file && wn_upload_file_owners($file, $id) ? '' : $file;
+    };
+    add_filter('wp_delete_file', $keep);
+    $ok = wp_delete_attachment($id, true);
+    remove_filter('wp_delete_file', $keep);
+    if (!$ok) {
       return new WP_Error('delete', 'WordPress không xóa được attachment.');
     }
     return true;
