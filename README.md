@@ -421,6 +421,9 @@ Thêm một mục kiểm tra/bước sửa cho Tối ưu web:
 
 ## Lịch sử phiên bản
 
+### 1.6.2
+- **Sửa lỗi tải ảnh mới mà hiện ra ảnh cũ** (chọn 5 ảnh túi, thấy ảnh vợt). Ảnh đã đổi sang WebP và xóa gốc thì `2.jpg`, `2-300x300.jpg` cũ vẫn còn trong cache trình duyệt (hạn 1 năm). Khi tắt module Ảnh WebP, tải ảnh mới tên `2.jpg` thì WordPress dùng lại đúng tên đó và trình duyệt hiện ảnh cũ. Giờ bước tránh trùng tên luôn chạy (kể cả khi tắt module) và coi cả size `-300x300.jpg/.png/.webp/.avif` còn trên đĩa là trùng, nên ảnh mới thành `2-1.jpg`.
+
 ### 1.6.1
 - **Sửa lỗi nghiêm trọng Ảnh WebP: ảnh hiện thành ảnh của sản phẩm khác.** WordPress cho `1.jpg`, `1.png`, `1.webp` nằm cạnh nhau; khi đổi `1.jpg` mà đã có `1.webp` (của ảnh khác) thì module dùng luôn file đó và xóa ảnh gốc. Giờ chỉ dùng lại `.webp` có sẵn khi chắc là của chính ảnh đó, còn lại chọn tên trống (`1-1.webp`, các size `1-1-150x150.webp`). Áp dụng cho chuyển hàng loạt, ảnh tải lên và file lẻ. Không xóa ảnh gốc mà attachment khác còn trỏ tới.
 - Ảnh WebP: tải `1.png` khi đã có `1.jpg` chưa đổi WebP cũng được đổi tên (bản trước chỉ nhìn file `.webp`).

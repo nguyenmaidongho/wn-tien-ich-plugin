@@ -33,7 +33,6 @@ final class WebNow_WebP_Batch {
     add_action('wp_ajax_webnow_webp_repair_links', [$this, 'ajax_repair_links']);
     add_action('init', [$this, 'maybe_cron_run'], 5);
     add_filter('wp_generate_attachment_metadata', [$this, 'on_metadata'], 99, 2);
-    add_filter('wp_unique_filename', [$this, 'unique_webp_name'], 10, 3);
     add_action('wn_webp_delete_originals', [$this, 'delete_attachment_originals']);
   }
 
@@ -1121,9 +1120,14 @@ final class WebNow_WebP_Batch {
    * có "1.jpg" (tải lên khi module tắt, hoặc đổi lỗi) rồi tải "1.png" thì "1.png" giữ tên, thành "1.webp";
    * lần chuyển hàng loạt sau đó đổi "1.jpg" lại dùng nhầm "1.webp" này. Giờ coi mọi ảnh cùng tên
    * (jpg/jpeg/png/webp, kể cả -scaled, -150x150) là trùng. Việc chọn tên .webp lúc đổi (plan_webp_targets)
-   * mới là chốt chặn chính; bước này chỉ để tên file dễ nhìn hơn.
+   * mới là chốt chặn chính.
+   *
+   * Hook này chạy cả khi TẮT module WebP: ảnh đã đổi sang WebP và xóa gốc thì "anh.jpg", "anh-300x300.jpg"
+   * cũ vẫn nằm trong cache trình duyệt (LiteSpeed đặt hạn 1 năm). Tải ảnh mới trùng tên "anh.jpg" thì WP
+   * dùng lại đúng các URL đó, trình duyệt không tải lại mà hiện ảnh cũ (sportcorner.vn 30/10/2026: chọn
+   * 5 ảnh túi, thấy ra ảnh vợt). Nên tên nào còn file cùng tên (kể cả size) là phải đổi.
    */
-  public function unique_webp_name($filename, $ext, $dir) {
+  public static function unique_webp_name($filename, $ext, $dir) {
     $e = pathinfo($filename, PATHINFO_EXTENSION);
     if (!preg_match('/^(jpe?g|png)$/i', $e)) {
       return $filename;
@@ -1131,13 +1135,13 @@ final class WebNow_WebP_Batch {
     $dir = trailingslashit($dir);
     $name = pathinfo($filename, PATHINFO_FILENAME);
     $taken = function ($n) use ($dir, $e) {
-      foreach (array_unique([$e, 'jpg', 'jpeg', 'png', 'webp']) as $x) {
+      foreach (array_unique([$e, 'jpg', 'jpeg', 'png', 'webp', 'avif']) as $x) {
         if (file_exists($dir . $n . '.' . $x)) {
           return true;
         }
       }
-      foreach (glob($dir . $n . '-*.webp', GLOB_NOSORT) ?: [] as $f) {
-        if (preg_match('/^' . preg_quote($n, '/') . '-(?:scaled|rotated|\d+x\d+)\.webp$/', wp_basename($f))) {
+      foreach (glob($dir . $n . '-*.*', GLOB_NOSORT) ?: [] as $f) {
+        if (preg_match('/^' . preg_quote($n, '/') . '-(?:scaled|rotated|\d+x\d+)\.(?:jpe?g|png|webp|avif)$/i', wp_basename($f))) {
           return true;
         }
       }
@@ -1349,6 +1353,10 @@ final class WebNow_WebP_Batch {
 
 }
 
-if (wn_module_on('webp') && !$wn_webp_standalone) {
-  new WebNow_WebP_Batch();
+if (!$wn_webp_standalone) {
+  // Luôn bật, kể cả khi tắt module: xem unique_webp_name().
+  add_filter('wp_unique_filename', ['WebNow_WebP_Batch', 'unique_webp_name'], 10, 3);
+  if (wn_module_on('webp')) {
+    new WebNow_WebP_Batch();
+  }
 }
