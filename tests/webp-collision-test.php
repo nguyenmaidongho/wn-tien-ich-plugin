@@ -290,6 +290,34 @@ try {
   foreach ([$q1, $q2, $q3] as $q) {
     $call('restore', $q);
   }
+
+  echo "9. Ảnh đã sửa trong Media (crop/xoay): bản lưu trước khi sửa cũng đổi sang WebP\n";
+  $ed = wn_t_attachment('e1.jpg', 'red');
+  $orig_meta = wp_get_attachment_metadata($ed);
+  $backup = ['full-orig' => ['width' => 400, 'height' => 300, 'file' => 'e1.jpg']];
+  foreach ((array) ($orig_meta['sizes'] ?? []) as $name => $s) {
+    $backup[$name . '-orig'] = $s;
+  }
+  // Giả lập WP sửa ảnh: file mới e1-e123.jpg + size mới, ảnh cũ ghi vào _wp_attachment_backup_sizes.
+  wn_t_image($dir . 'e1-e123.jpg', 'red');
+  update_attached_file($ed, $dir . 'e1-e123.jpg');
+  remove_filter('wp_generate_attachment_metadata', [$webp, 'on_metadata'], 99);
+  wp_update_attachment_metadata($ed, wp_generate_attachment_metadata($ed, $dir . 'e1-e123.jpg'));
+  add_filter('wp_generate_attachment_metadata', [$webp, 'on_metadata'], 99, 2);
+  update_post_meta($ed, '_wp_attachment_backup_sizes', $backup);
+  $pe = wn_t_post('<img src="' . $url . 'e1.jpg">');
+  wn_t_check($webp->attachment_needs_convert($ed), 'cần đổi (còn ảnh gốc trước khi sửa)');
+  wn_t_check($webp->convert_attachment($ed) === true, 'convert_attachment trả true');
+  $bk = get_post_meta($ed, '_wp_attachment_backup_sizes', true);
+  $bk_files = array_map(function ($s) use ($dir) {
+    return $dir . $s['file'];
+  }, (array) $bk);
+  wn_t_check(count(array_filter($bk_files, function ($p) {
+    return substr($p, -5) === '.webp' && is_file($p) && wn_t_color($p) === 'red';
+  })) === count($backup), 'mọi mục backup_sizes là .webp có thật, vẫn đỏ: ' . implode(', ', array_map('wp_basename', $bk_files)));
+  wn_t_check(!glob($dir . 'e1*.jpg'), 'không còn e1*.jpg trong uploads');
+  wn_t_check(strpos(wn_t_content($pe), $sub . '/' . $bk['full-orig']['file']) !== false, 'link e1.jpg trong bài đổi sang ' . $bk['full-orig']['file']);
+  wn_t_check(!$webp->attachment_needs_convert($ed), 'chạy lại: không còn gì để đổi');
 } finally {
   foreach ($created['posts'] as $id) {
     wp_delete_post($id, true);

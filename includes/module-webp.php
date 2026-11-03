@@ -162,7 +162,23 @@ final class WebNow_WebP_Batch {
         }
       }
     }
+    // Bản lưu trước khi sửa ảnh (crop/xoay trong Media): trước đây bị sót, nằm lại dạng JPG/PNG mãi.
+    if ($dir) {
+      foreach ($this->backup_sizes($attachment_id) as $size) {
+        if (preg_match('/\.(jpe?g|png)$/i', $size['file']) && is_file($dir . wp_basename($size['file']))) {
+          return true;
+        }
+      }
+    }
     return false;
+  }
+
+  /** _wp_attachment_backup_sizes, chỉ giữ mục có tên file. @return array<string,array> */
+  private function backup_sizes($attachment_id) {
+    $backup = get_post_meta($attachment_id, '_wp_attachment_backup_sizes', true);
+    return array_filter(is_array($backup) ? $backup : [], function ($s) {
+      return is_array($s) && !empty($s['file']) && is_string($s['file']);
+    });
   }
 
   /** @return array<string,int|array> */
@@ -706,6 +722,13 @@ final class WebNow_WebP_Batch {
         $sources[] = $dir . wp_basename($size['file']);
       }
     }
+    $backup = $this->backup_sizes($attachment_id);
+    foreach ($backup as $size) {
+      if (preg_match('/\.(jpe?g|png)$/i', $size['file'])) {
+        $sources[] = $dir . wp_basename($size['file']);
+      }
+    }
+    $backup_changed = false;
     $plan = $this->plan_webp_targets($sources, $attachment_id);
     $made = [];
     $make = function ($src) use ($plan, &$made) {
@@ -781,6 +804,24 @@ final class WebNow_WebP_Batch {
       }
     }
 
+    // --- Bản lưu trước khi sửa ảnh: đổi luôn để "Khôi phục ảnh gốc" trong Media vẫn chạy (ra .webp) ---
+    foreach ($backup as $key => $size) {
+      if (!preg_match('/\.(jpe?g|png)$/i', $size['file'])) {
+        continue;
+      }
+      $src = $dir . wp_basename($size['file']);
+      $new = $make($src);
+      if (!is_string($new)) {
+        continue;
+      }
+      $replacements[$rel($src)] = $rel($new);
+      $backup[$key]['file'] = wp_basename($new);
+      $backup[$key]['mime-type'] = 'image/webp';
+      $pending_delete[$src] = $new;
+      $backup_changed = true;
+      $changed = true;
+    }
+
     if (!$changed && !$replacements) {
       if (get_post_mime_type($attachment_id) !== 'image/webp' && $file && preg_match('/\.webp$/i', $file)) {
         wp_update_post(['ID' => $attachment_id, 'post_mime_type' => 'image/webp']);
@@ -795,6 +836,9 @@ final class WebNow_WebP_Batch {
       'post_mime_type' => 'image/webp',
     ]);
     wp_update_attachment_metadata($attachment_id, $meta);
+    if ($backup_changed) {
+      update_post_meta($attachment_id, '_wp_attachment_backup_sizes', $backup);
+    }
     $done = [];
     foreach ($pending_delete as $raster => $webp) {
       $done[$this->relative_upload_path($raster)] = $this->relative_upload_path($webp);

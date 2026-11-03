@@ -421,6 +421,9 @@ Thêm một mục kiểm tra/bước sửa cho Tối ưu web:
 
 ## Lịch sử phiên bản
 
+### 1.6.3
+- **Ảnh WebP: đổi luôn bản lưu trước khi sửa ảnh.** Ảnh từng crop/xoay trong Media có bản gốc và các size cũ ghi ở `_wp_attachment_backup_sizes`. Bản trước bỏ sót, nên những file này nằm lại dạng JPG/PNG mãi và Tối ưu web cứ báo "Ảnh JPG/PNG chưa đổi" (site laverandaresorts còn 802 file). Giờ chúng được đổi sang `.webp` cùng attachment, metadata cập nhật để "Khôi phục ảnh gốc" vẫn chạy, link cũ trong bài đổi theo, rồi mới xóa JPG/PNG.
+
 ### 1.6.2
 - **Sửa lỗi tải ảnh mới mà hiện ra ảnh cũ** (chọn 5 ảnh túi, thấy ảnh vợt). Ảnh đã đổi sang WebP và xóa gốc thì `2.jpg`, `2-300x300.jpg` cũ vẫn còn trong cache trình duyệt (hạn 1 năm). Khi tắt module Ảnh WebP, tải ảnh mới tên `2.jpg` thì WordPress dùng lại đúng tên đó và trình duyệt hiện ảnh cũ. Giờ bước tránh trùng tên luôn chạy (kể cả khi tắt module) và coi cả size `-300x300.jpg/.png/.webp/.avif` còn trên đĩa là trùng, nên ảnh mới thành `2-1.jpg`.
 
