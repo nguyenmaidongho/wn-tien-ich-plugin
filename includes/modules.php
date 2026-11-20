@@ -26,6 +26,13 @@ function wn_modules() {
       'default' => '1',
       'tab' => 'contact',
     ],
+    'telegram' => [
+      'title' => 'Thông báo Telegram',
+      'desc' => 'Báo về Telegram khi có đơn hàng, bình luận, đánh giá, form liên hệ... Tick chọn việc muốn nhận; web không có WooCommerce vẫn dùng được với Contact Form 7.',
+      'icon' => 'dashicons-megaphone',
+      'default' => '0',
+      'tab' => 'telegram',
+    ],
     'tet' => [
       'title' => 'Trang trí Tết',
       'desc' => 'Câu đối, hoa đào/mai rơi, pháo hoa; hẹn ngày tự bật/tắt. Thay plugin DevVN Trang trí Tết.',

@@ -225,6 +225,15 @@ button.wn-ver:hover { background: rgba(255,255,255,.24); }
 .wn-btn-primary { background: var(--wn-red); border-color: var(--wn-red); color: #fff; }
 .wn-btn-primary:hover { background: #b81824; border-color: #b81824; color: #fff; }
 
+/* Telegram */
+.wn-actions-tight { padding-top: 10px; }
+.wn-chip.is-disabled { opacity: .45; }
+.wn-chip.is-disabled span { cursor: not-allowed; }
+.wn-tg-found { margin-top: 12px; display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+.wn-tg-found p { width: 100%; margin: 0; font-size: 12.5px; color: var(--wn-muted); }
+.wn-chip-btn { padding: 6px 12px; border-radius: 99px; border: 1px dashed var(--wn-red); background: #fff; color: var(--wn-red); font-weight: 500; cursor: pointer; }
+.wn-chip-btn.is-added { border-style: solid; background: var(--wn-red-soft); }
+
 /* Toast */
 .wn-toast {
   position: fixed; right: 24px; bottom: 24px; z-index: 99999; max-width: 340px;

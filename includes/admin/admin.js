@@ -61,6 +61,46 @@
       $(this).prop('hidden', true);
     });
 
+    // Telegram: tìm Chat ID từ tin nhắn gửi bot, gửi tin thử với giá trị đang gõ trong form.
+    $(document).on('click', '[data-tg]', function (e) {
+      e.preventDefault();
+      var $btn = $(this).prop('disabled', true);
+      var mode = $btn.data('tg');
+      $.post(WN_ADMIN.ajax, {
+        action: mode === 'find' ? 'wn_tg_find_chats' : 'wn_tg_test',
+        _ajax_nonce: WN_ADMIN.nonce,
+        token: $('#wn-tg-token').val(),
+        chats: $('#wn-tg-chats').val()
+      })
+        .done(function (res) {
+          if (!res || !res.success) {
+            toast((res && res.data) || 'Không gửi được', true);
+            return;
+          }
+          if (mode !== 'find') {
+            toast(res.data);
+            return;
+          }
+          var $box = $('.wn-tg-found').empty().prop('hidden', false);
+          $box.append('<p>Bấm để thêm vào danh sách:</p>');
+          res.data.forEach(function (c) {
+            $('<button type="button" class="wn-chip-btn"></button>')
+              .text((c.name || c.type) + ' · ' + c.id)
+              .on('click', function () {
+                var $ta = $('#wn-tg-chats');
+                var ids = $ta.val().split(/[\s,;]+/).filter(Boolean);
+                if (ids.indexOf(c.id) < 0) ids.push(c.id);
+                $ta.val(ids.join('\n'));
+                $(this).addClass('is-added');
+                toast('Đã thêm ' + c.id + ' — nhớ bấm Lưu');
+              })
+              .appendTo($box);
+          });
+        })
+        .fail(function () { toast('Lỗi kết nối, thử lại sau', true); })
+        .always(function () { $btn.prop('disabled', false); });
+    });
+
     // data-show-if="tên=giá trị" hoặc "tên!=giá trị": ẩn/hiện trường phụ theo lựa chọn.
     var $conds = $('[data-show-if]');
     function applyConds() {
