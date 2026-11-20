@@ -101,6 +101,24 @@
         .always(function () { $btn.prop('disabled', false); });
     });
 
+    // SMTP: đổi kiểu mã hóa thì điền cổng tương ứng; gửi thư thử bằng giá trị đang gõ trong form.
+    $(document).on('change', '[data-smtp-port]', function () {
+      $('#wn-smtp-port').val($(this).data('smtp-port'));
+    });
+    $(document).on('click', '[data-smtp-test]', function (e) {
+      e.preventDefault();
+      var $btn = $(this).prop('disabled', true);
+      var data = { action: 'wn_smtp_test', _ajax_nonce: WN_ADMIN.nonce, to: $('#wn-smtp-to').val() };
+      $btn.closest('form').find('[name^="wn_smtp_"]').each(function () {
+        if (this.type !== 'radio' || this.checked) data[this.name] = $(this).val();
+      });
+      toast('Đang gửi thư thử…');
+      $.post(WN_ADMIN.ajax, data)
+        .done(function (res) { toast((res && res.data) || 'Không gửi được', !(res && res.success)); })
+        .fail(function () { toast('Lỗi kết nối, thử lại sau', true); })
+        .always(function () { $btn.prop('disabled', false); });
+    });
+
     // data-show-if="tên=giá trị" hoặc "tên!=giá trị": ẩn/hiện trường phụ theo lựa chọn.
     var $conds = $('[data-show-if]');
     function applyConds() {

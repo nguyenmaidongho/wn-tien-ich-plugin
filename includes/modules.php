@@ -33,6 +33,13 @@ function wn_modules() {
       'default' => '0',
       'tab' => 'telegram',
     ],
+    'smtp' => [
+      'title' => 'Gửi email qua SMTP',
+      'desc' => 'Mọi email của website (form liên hệ, đơn hàng, quên mật khẩu...) đi qua Gmail/Zoho/email tên miền để không vào spam. Thay plugin WP Mail SMTP.',
+      'icon' => 'dashicons-email-alt',
+      'default' => '0',
+      'tab' => 'smtp',
+    ],
     'tet' => [
       'title' => 'Trang trí Tết',
       'desc' => 'Câu đối, hoa đào/mai rơi, pháo hoa; hẹn ngày tự bật/tắt. Thay plugin DevVN Trang trí Tết.',

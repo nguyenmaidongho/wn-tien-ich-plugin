@@ -235,6 +235,53 @@ add_action('user_register', function ($user_id) {
   ], admin_url('user-edit.php?user_id=' . $user_id), 'Xem tài khoản'));
 });
 
+/* ---------- Email song song ---------- */
+
+/**
+ * Có bỏ email báo cho quản trị của sự kiện này không. Chỉ bỏ khi chọn "Chỉ Telegram", module đang bật,
+ * sự kiện đang được tick và đã đủ token + Chat ID — tức là chắc chắn còn một kênh báo về.
+ */
+function wn_tg_mute_email($event) {
+  return get_option('wn_tg_email', '1') === '0'
+    && wn_module_on('telegram')
+    && wn_tg_event_on($event)
+    && get_option('wn_tg_token', '')
+    && wn_tg_chat_ids();
+}
+
+// Contact Form 7: bỏ gửi mail (kể cả thư tự trả lời Mail 2); wpcf7_mail_sent vẫn chạy nên Telegram vẫn báo.
+add_filter('wpcf7_skip_mail', function ($skip) {
+  return $skip || wn_tg_mute_email('contact');
+});
+
+// WooCommerce: chỉ tắt email gửi quản trị, email của khách (xác nhận đơn...) giữ nguyên.
+add_filter('woocommerce_email_enabled_new_order', function ($on) {
+  return $on && !wn_tg_mute_email('order_new');
+});
+foreach (['cancelled_order', 'failed_order'] as $wn_tg_mail_id) {
+  add_filter('woocommerce_email_enabled_' . $wn_tg_mail_id, function ($on) {
+    return $on && !wn_tg_mute_email('order_status');
+  });
+}
+unset($wn_tg_mail_id);
+
+// Bình luận / đánh giá: email báo tác giả bài và email chờ duyệt.
+function wn_tg_comment_mail($on, $comment_id) {
+  $c = get_comment($comment_id);
+  if (!$on || !$c) {
+    return $on;
+  }
+  $is_review = $c->comment_type === 'review' || get_post_type($c->comment_post_ID) === 'product';
+  return !wn_tg_mute_email($is_review ? 'review' : 'comment');
+}
+add_filter('notify_post_author', 'wn_tg_comment_mail', 20, 2);
+add_filter('notify_moderator', 'wn_tg_comment_mail', 20, 2);
+
+// Thành viên mới: email báo quản trị (email gửi cho thành viên giữ nguyên).
+add_filter('wp_send_new_user_notification_to_admin', function ($on) {
+  return $on && !wn_tg_mute_email('user');
+});
+
 /* ---------- Quản trị ---------- */
 
 function wn_tg_save_settings($post) {
@@ -245,6 +292,7 @@ function wn_tg_save_settings($post) {
   update_option('wn_tg_chats', implode("\n", wn_tg_chat_ids(sanitize_textarea_field(wp_unslash($post['wn_tg_chats'] ?? '')))), false);
   $events = array_values(array_intersect(array_keys(wn_tg_events()), array_map('sanitize_key', (array) ($post['wn_tg_events'] ?? []))));
   update_option('wn_tg_events', $events, false);
+  update_option('wn_tg_email', ($post['wn_tg_email'] ?? '1') === '0' ? '0' : '1', false);
 }
 
 /** Token đang dùng: lấy từ form nếu vừa gõ mới, không thì lấy bản đã lưu. */
@@ -327,6 +375,18 @@ function wn_tg_render_settings() {
           <span><i class="dashicons <?php echo esc_attr($e['icon']); ?>"></i><?php echo esc_html($e['label']); ?><?php if (!empty($e['hint'])) : ?> <em><?php echo esc_html($e['hint']); ?></em><?php endif; ?></span>
         </label>
       <?php endforeach; ?>
+    </div>
+  </div>
+  <div class="wn-field">
+    <div class="wn-field-label">Email thông báo<small>Áp dụng cho những việc đang tick ở trên. Muốn chỉ nhận email thì bỏ tick việc đó (hoặc tắt hẳn tính năng).</small></div>
+    <div>
+      <div class="wn-chips">
+        <?php $email = get_option('wn_tg_email', '1') === '0' ? '0' : '1';
+        foreach (['1' => 'Gửi cả email và Telegram', '0' => 'Chỉ Telegram, tắt email'] as $v => $l) : ?>
+          <label class="wn-chip"><input type="radio" name="wn_tg_email" value="<?php echo esc_attr($v); ?>" <?php checked($email, (string) $v); ?>><span><?php echo esc_html($l); ?></span></label>
+        <?php endforeach; ?>
+      </div>
+      <p class="wn-hint">Tắt email chỉ bỏ thư gửi cho quản trị (đơn mới, bình luận, thành viên mới...). Email gửi khách như xác nhận đơn hàng vẫn gửi. Riêng Contact Form 7 thì thư tự trả lời cho khách (Mail 2) cũng không gửi.</p>
     </div>
   </div>
   <?php if (!$ready) : ?>

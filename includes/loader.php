@@ -128,6 +128,7 @@ require_once WN_PLUGIN_DIR . '/includes/module-fontawesome.php';
 require_once WN_PLUGIN_DIR . '/includes/module-tet.php';
 require_once WN_PLUGIN_DIR . '/includes/module-contact.php';
 require_once WN_PLUGIN_DIR . '/includes/module-telegram.php';
+require_once WN_PLUGIN_DIR . '/includes/module-smtp.php';
 require_once WN_PLUGIN_DIR . '/includes/module-webp.php';
 require_once WN_PLUGIN_DIR . '/includes/module-cleanup.php';
 require_once WN_PLUGIN_DIR . '/includes/module-optimize.php';

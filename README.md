@@ -164,6 +164,7 @@ Bật/tắt từng tính năng ở **WebNow → Tính năng**. Thay đổi lưu 
 | 13 | Ẩn thông báo cập nhật | Tắt | | không khuyến khích |
 | 14 | Classic Editor | Tắt | Classic Editor | |
 | 15 | Thông báo Telegram | Tắt | | WebNow → Telegram |
+| 16 | Gửi email qua SMTP | Tắt | WP Mail SMTP | WebNow → Email SMTP |
 
 Ngoài ra plugin luôn cho phép tải file **SVG** lên Thư viện (dùng cho logo màn hình chờ).
 
@@ -302,6 +303,14 @@ Nút nổi gọi điện, Zalo, Messenger, WhatsApp, chỉ đường Google Maps
 ### Thông báo Telegram
 Gửi tin về Telegram qua bot khi có: đơn hàng mới, đơn đổi trạng thái, đánh giá sản phẩm (WooCommerce), bình luận bài viết, form liên hệ (Contact Form 7), thành viên mới. Mỗi loại là một ô tick riêng ở **WebNow → Telegram**; loại nào thiếu plugin cần thiết thì ô tự khóa, nên web không có WooCommerce vẫn dùng được chỉ với Contact Form 7. Cài đặt: Bot token (tạo ở @BotFather), Chat ID (nút **Tìm Chat ID**, nhiều người/nhóm thì mỗi ID một dòng), nút **Gửi tin thử**. Tin được gom lại và gửi ở cuối request nên không làm chậm lúc khách đặt hàng/gửi form. Form liên hệ được báo cả khi máy chủ gửi email thất bại.
 
+Mục **Email thông báo** chọn có gửi email song song hay không:
+- *Gửi cả email và Telegram* (mặc định): email của WordPress/WooCommerce/Contact Form 7 giữ nguyên.
+- *Chỉ Telegram, tắt email*: bỏ email gửi quản trị của những việc đang tick (đơn mới, đơn hủy/lỗi, bình luận, đánh giá, thành viên mới, form liên hệ). Email gửi khách (xác nhận đơn hàng...) vẫn gửi; riêng Contact Form 7 thì thư tự trả lời Mail 2 cũng dừng. Chỉ có hiệu lực khi đã nhập đủ token + Chat ID, để không bao giờ mất cả hai kênh.
+- Muốn *chỉ email*: bỏ tick việc đó, hoặc tắt tính năng.
+
+### Gửi email qua SMTP
+Mọi email gửi bằng `wp_mail()` (Contact Form 7, WooCommerce, quên mật khẩu...) đi qua máy chủ SMTP đã nhập thay cho hàm `mail()` của hosting. Cài đặt ở **WebNow → Email SMTP**: máy chủ, mã hóa (TLS 587 / SSL 465 / không), tài khoản, mật khẩu, email và tên người gửi, nút **Gửi thư thử** (thử bằng giá trị đang nhập, chưa cần Lưu; lỗi của máy chủ SMTP hiện ngay). Gmail phải dùng mật khẩu ứng dụng. Mật khẩu lưu trong option `wn_smtp`; muốn không để trong database thì thêm `define('WN_SMTP_PASS', '...');` vào `wp-config.php`. Tắt plugin SMTP khác (WP Mail SMTP, Easy WP SMTP...) khi bật tính năng này.
+
 ### Trang trí Tết
 Câu đối, hoa đào/mai rơi, pháo hoa, nhạc; hẹn ngày tự bật/tắt. Dùng lại option `tet_options` của plugin DevVN nên giữ được cấu hình cũ. Hiệu ứng chạy bằng `requestAnimationFrame`, pháo hoa dừng hẳn khi hết giờ, nhạc phát ở lần chạm đầu tiên (trình duyệt chặn tự phát). Không hiện hiệu ứng nếu người xem bật "giảm chuyển động".
 
@@ -367,7 +376,8 @@ Cách kiểm tra nhanh site đang có gì:
 | `wn_module_{key}` | Bật/tắt từng tính năng (`'1'`/`'0'`) |
 | `wn_search_post_types`, `wn_search_limit` | Cài đặt tìm kiếm |
 | `wn_contact` | Cài đặt nút liên hệ |
-| `wn_tg_token`, `wn_tg_chats`, `wn_tg_events` | Thông báo Telegram: bot token, danh sách Chat ID, các loại thông báo đang tick |
+| `wn_tg_token`, `wn_tg_chats`, `wn_tg_events`, `wn_tg_email` | Thông báo Telegram: bot token, danh sách Chat ID, các loại thông báo đang tick, có gửi email song song không (`'1'`/`'0'`) |
+| `wn_smtp` | Gửi email qua SMTP: máy chủ, cổng, mã hóa, tài khoản, mật khẩu, người gửi |
 | `tet_options` | Cài đặt trang trí Tết (dùng chung với plugin DevVN) |
 | `wn-tien-ich-main_logo_svg`, `_dashoffset`, `_background` | Màn hình chờ |
 | `webnow_webp_quality`, `webnow_webp_delete_originals`, `webnow_webp_cron_secret`, `webnow_webp_queue_v32`, `webnow_webp_loose_map` | Ảnh WebP |
@@ -399,6 +409,7 @@ includes/
   module-search.php          Tìm kiếm nhanh
   module-contact.php         Nút liên hệ
   module-telegram.php        Thông báo Telegram
+  module-smtp.php            Gửi email qua SMTP
   module-tet.php             Trang trí Tết
   module-fontawesome.php     Font Awesome
   module-webp.php            Ảnh WebP + công cụ chuyển hàng loạt  (webp-batch.js)
@@ -426,6 +437,10 @@ Thêm một mục kiểm tra/bước sửa cho Tối ưu web:
 ---
 
 ## Lịch sử phiên bản
+
+### 1.7
+- **Telegram: chọn có gửi email song song hay không.** Tab Telegram thêm mục *Email thông báo*: gửi cả email và Telegram, hoặc chỉ Telegram (tắt email gửi quản trị của những việc đang tick). Email gửi khách không bị ảnh hưởng.
+- **Thêm Gửi email qua SMTP.** Tab **WebNow → Email SMTP**: nhập máy chủ, tài khoản, mật khẩu, người gửi; có nút Gửi thư thử. Thay plugin WP Mail SMTP.
 
 ### 1.6.4
 - **Thêm lại Thông báo Telegram.** Module này trước chỉ cài tay trên một site (bản 1.3) và không có trong repo, nên site đó cập nhật plugin từ GitHub là mất thông báo. Giờ nằm hẳn trong plugin: tab **WebNow → Telegram**, tick từng loại thông báo, loại thiếu WooCommerce/Contact Form 7 tự khóa. Cấu hình cũ (`wn_tg_*`) dùng lại được, không phải nhập lại. Form liên hệ giờ được báo cả khi gửi email thất bại.

@@ -17,6 +17,7 @@ function wn_admin_tabs() {
     'search' => ['label' => 'Tìm kiếm', 'icon' => 'dashicons-search'],
     'contact' => ['label' => 'Nút liên hệ', 'icon' => 'dashicons-phone'],
     'telegram' => ['label' => 'Telegram', 'icon' => 'dashicons-megaphone'],
+    'smtp' => ['label' => 'Email SMTP', 'icon' => 'dashicons-email-alt'],
     'tet' => ['label' => 'Trang trí Tết', 'icon' => 'dashicons-star-filled'],
     'preload' => ['label' => 'Màn hình chờ', 'icon' => 'dashicons-update'],
   ];
@@ -109,8 +110,10 @@ add_action('admin_post_wn_save_settings', function () {
     wn_contact_save_settings($_POST);
   } elseif ($tab === 'telegram') {
     wn_tg_save_settings($_POST);
+  } elseif ($tab === 'smtp') {
+    wn_smtp_save_settings($_POST);
   }
-  if ($tab !== 'telegram') {
+  if (!in_array($tab, ['telegram', 'smtp'], true)) {
     wn_clear_page_cache();
   }
 
@@ -282,6 +285,13 @@ function wn_render_tab_telegram() {
   wn_module_bar('telegram');
   wn_settings_form_open('telegram');
   wn_tg_render_settings();
+  echo '<div class="wn-actions"><button type="submit" class="wn-btn wn-btn-primary">Lưu thay đổi</button></div></form>';
+}
+
+function wn_render_tab_smtp() {
+  wn_module_bar('smtp');
+  wn_settings_form_open('smtp');
+  wn_smtp_render_settings();
   echo '<div class="wn-actions"><button type="submit" class="wn-btn wn-btn-primary">Lưu thay đổi</button></div></form>';
 }
 
